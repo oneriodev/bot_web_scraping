@@ -47,6 +47,11 @@ class Settings:
         return self.data_dir / "raw"
 
     @property
+    def database_path(self) -> Path:
+        """Arquivo do banco analítico DuckDB."""
+        return self.data_dir / "monitor_precos.duckdb"
+
+    @property
     def inbox_dir(self) -> Path:
         """Caixa de entrada manual (imagens recebidas por WhatsApp/redes sociais)."""
         return self.data_dir / "inbox"
