@@ -1,3 +1,28 @@
+# --- Ambiente virtual Python ---
+venv/
+env/
+.venv/
+
+# --- Cache/bytecode Python ---
+__pycache__/
+*.pyc
+*.pyo
+
+# --- Saída do bot e logs ---
+output/
+logs/
+
+# --- Variáveis de ambiente / segredos ---
+.env
+
+# --- Editor / SO ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Driver do Selenium baixado automaticamente pelo webdriver-manager ---
+.wdm/
 
 # --- Monitor de preços (nova estrutura) ---
 # arquivos baixados, caixa de entrada e banco DuckDB
