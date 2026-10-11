@@ -84,3 +84,22 @@ CREATE TABLE IF NOT EXISTS de_para_concorrente (
     aprovado_em            TIMESTAMP    NOT NULL,
     UNIQUE (concorrente, descricao_concorrente)
 );
+
+-- ---------------------------------------------------------------------------------
+-- execucoes: uma linha por execução de coleta (trilha de auditoria do pipeline).
+-- O agendador (Etapa 9) consulta esta tabela para saber se algo falhou.
+-- ---------------------------------------------------------------------------------
+CREATE SEQUENCE IF NOT EXISTS seq_execucoes START 1;
+
+CREATE TABLE IF NOT EXISTS execucoes (
+    id                  INTEGER PRIMARY KEY DEFAULT nextval('seq_execucoes'),
+    concorrente         VARCHAR   NOT NULL,
+    iniciado_em         TIMESTAMP NOT NULL,             -- UTC
+    finalizado_em       TIMESTAMP,                      -- NULL = ainda rodando (ou travou)
+    status              VARCHAR   NOT NULL DEFAULT 'em_andamento',
+    arquivos_novos      INTEGER   NOT NULL DEFAULT 0,
+    arquivos_repetidos  INTEGER   NOT NULL DEFAULT 0,
+    falhas              INTEGER   NOT NULL DEFAULT 0,
+    mensagem            VARCHAR,                        -- erro ou aviso, quando houver
+    CHECK (status IN ('em_andamento', 'sucesso', 'parcial', 'falha'))
+);

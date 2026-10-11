@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass, field
-from datetime import date, datetime
+from datetime import UTC, date, datetime
 from pathlib import Path
 from types import TracebackType
 from typing import Self
@@ -27,6 +27,7 @@ logger = logging.getLogger(__name__)
 SCHEMA_FILE = Path(__file__).with_name("schema.sql")
 
 EXTRACTION_STATUSES = ("pendente", "extraido", "revisao", "erro")
+RUN_STATUSES = ("sucesso", "parcial", "falha")
 
 # Colunas listadas explicitamente (nunca "SELECT *"): se alguém adicionar uma coluna
 # na tabela, o código continua lendo exatamente o que espera, na ordem certa.
@@ -191,3 +192,51 @@ class Repository:
             collected_at=at,
             status=status,
         )
+
+    # ------------------------------------------------------------ execuções
+    def start_run(self, competitor: str) -> int:
+        """Registra o início de uma execução e devolve o id dela.
+
+        Fica gravado ANTES de coletar: se o processo travar no meio, sobra uma linha
+        "em_andamento" sem finalizado_em — e isso também é uma informação útil.
+        """
+        row = self.connection.execute(
+            "INSERT INTO execucoes (concorrente, iniciado_em) VALUES (?, ?) RETURNING id",
+            [competitor, _utc_now()],
+        ).fetchone()
+        assert row is not None
+        return int(row[0])
+
+    def finish_run(
+        self,
+        run_id: int,
+        status: str,
+        *,
+        inserted: int = 0,
+        duplicates: int = 0,
+        failures: int = 0,
+        message: str | None = None,
+    ) -> None:
+        if status not in RUN_STATUSES:
+            raise ValueError(f"Status inválido: {status!r}. Use um de {RUN_STATUSES}.")
+        self.connection.execute(
+            """
+            UPDATE execucoes
+            SET finalizado_em = ?, status = ?, arquivos_novos = ?,
+                arquivos_repetidos = ?, falhas = ?, mensagem = ?
+            WHERE id = ?
+            """,
+            [_utc_now(), status, inserted, duplicates, failures, message, run_id],
+        )
+
+    def latest_valid_until(self, competitor: str) -> date | None:
+        """A validade mais distante já anunciada pelo concorrente (None se nunca houve)."""
+        row = self.connection.execute(
+            "SELECT MAX(validade_fim) FROM coletas WHERE concorrente = ?", [competitor]
+        ).fetchone()
+        return row[0] if row else None
+
+
+def _utc_now() -> datetime:
+    """Agora em UTC, sem fuso anexado (é assim que as colunas TIMESTAMP guardam)."""
+    return datetime.now(UTC).replace(tzinfo=None)

@@ -70,6 +70,9 @@ class BaseCollector(ABC):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
+        # URLs que falharam na última coleta. O coletor não para por causa delas,
+        # mas a execução é registrada como "parcial" para ninguém ser enganado.
+        self.failed_urls: list[str] = []
 
     @abstractmethod
     def collect(self) -> list[CollectedFile]:

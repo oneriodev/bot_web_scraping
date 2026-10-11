@@ -207,6 +207,7 @@ class ServeMaisCollector(BaseCollector):
         self.http = http
 
     def collect(self) -> list[CollectedFile]:
+        self.failed_urls = []
         html = self.http.get_text(OFFERS_URL)
         images = parse_offer_images(html, OFFERS_URL)
         logger.info(
@@ -226,6 +227,7 @@ class ServeMaisCollector(BaseCollector):
                     "Falha ao baixar imagem",
                     extra={"url": image.original_url, "error": str(error)},
                 )
+                self.failed_urls.append(image.original_url)
                 continue
 
             digest = compute_sha256(content)

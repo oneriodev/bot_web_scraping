@@ -11,6 +11,7 @@ import os
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from dotenv import load_dotenv
 from requests.utils import default_user_agent
@@ -18,8 +19,6 @@ from requests.utils import default_user_agent
 # Raiz do repositório: src/monitor_precos/config.py → sobe 3 níveis.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-# User-Agent padrão do requests (ex.: "python-requests/2.34.2"): não revela quem coleta
-# e não finge ser navegador. Pode ser trocado pela variável USER_AGENT no .env.
 DEFAULT_USER_AGENT = default_user_agent()
 
 
@@ -40,6 +39,12 @@ class Settings:
     request_timeout_seconds: float
     request_delay_seconds: float
     max_retries: int
+    timezone: str = "America/Cuiaba"  # fuso da operação: define o que é "hoje"
+
+    @property
+    def tz(self) -> ZoneInfo:
+        """Fuso horário como objeto (o banco guarda UTC; "hoje" é no fuso da loja)."""
+        return ZoneInfo(self.timezone)
 
     @property
     def raw_dir(self) -> Path:
@@ -78,6 +83,7 @@ def load_settings(env_file: Path | None = None) -> Settings:
         request_timeout_seconds=float(os.getenv("REQUEST_TIMEOUT_SECONDS", "15")),
         request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "2.0")),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
+        timezone=os.getenv("TIMEZONE", "America/Cuiaba"),
     )
 
 

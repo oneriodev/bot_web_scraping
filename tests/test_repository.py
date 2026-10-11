@@ -113,3 +113,30 @@ def test_banco_persiste_entre_conexoes(settings) -> None:
     with Repository(settings.database_path, settings.data_dir) as repo:
         assert len(repo.pending_collections()) == 1
     assert Path(settings.database_path).exists()
+
+
+# ------------------------------------------------------------------ Etapa 3: execuções
+def test_registro_de_execucao(repo) -> None:
+    run_id = repo.start_run("serve_mais")
+    status, fim = repo.connection.execute(
+        "SELECT status, finalizado_em FROM execucoes WHERE id = ?", [run_id]
+    ).fetchone()
+    assert (status, fim) == ("em_andamento", None)  # gravado ANTES de coletar
+
+    repo.finish_run(run_id, "parcial", inserted=10, duplicates=2, failures=1, message="1 falha")
+    linha = repo.connection.execute(
+        "SELECT status, arquivos_novos, arquivos_repetidos, falhas, mensagem FROM execucoes"
+    ).fetchone()
+    assert linha == ("parcial", 10, 2, 1, "1 falha")
+
+
+def test_finish_run_recusa_status_invalido(repo) -> None:
+    run_id = repo.start_run("serve_mais")
+    with pytest.raises(ValueError):
+        repo.finish_run(run_id, "ok")
+
+
+def test_latest_valid_until(repo, settings) -> None:
+    assert repo.latest_valid_until("serve_mais") is None
+    repo.save_collections([_file(settings, "h1")])
+    assert repo.latest_valid_until("serve_mais") == date(2026, 10, 2)

@@ -181,8 +181,10 @@ def test_coleta_ignora_imagem_com_erro_e_continua(settings) -> None:
         _html_com(f"{UPLOADS}/sumiu.webp", f"{UPLOADS}/B.webp"),
         {f"{UPLOADS}/B.webp": b"imagem-B"},
     )
-    files = ServeMaisCollector(settings, http).collect()
+    collector = ServeMaisCollector(settings, http)
+    files = collector.collect()
     assert [f.source_url for f in files] == [f"{UPLOADS}/B.webp"]
+    assert collector.failed_urls == [f"{UPLOADS}/sumiu.webp"]  # a falha fica registrada
 
 
 def test_coleta_grava_campanha_e_validade(settings) -> None:

@@ -5,6 +5,7 @@ Exemplos:
     uv run monitor-precos coletar serve_mais
     uv run monitor-precos importar assai      # arquivos de data/inbox/assai/
     uv run monitor-precos resumo
+    uv run monitor-precos execucoes
     uv run monitor-precos sql "SELECT concorrente, COUNT(*) FROM coletas GROUP BY 1"
 """
 
@@ -14,6 +15,7 @@ import argparse
 import logging
 import sys
 from collections.abc import Callable
+from datetime import date, datetime
 
 import duckdb
 
@@ -47,15 +49,55 @@ ORDER BY concorrente, MAX(coletado_em) DESC
 """
 
 
-def _run(collector: BaseCollector, repo: Repository) -> int:
-    """Coleta, grava no banco e imprime o resumo. Devolve o código de saída (0 = sucesso)."""
+RUNS_SQL = """
+SELECT
+    id,
+    concorrente,
+    strftime(iniciado_em, '%d/%m %H:%M')  AS inicio_utc,
+    status,
+    arquivos_novos                         AS novos,
+    arquivos_repetidos                     AS repetidos,
+    falhas,
+    COALESCE(mensagem, '')                 AS mensagem
+FROM execucoes
+ORDER BY id DESC
+LIMIT 15
+"""
+
+
+def run_status(inserted: int, duplicates: int, failures: int) -> str:
+    """Classifica a execução. Nada salvo E houve falha = falha total."""
+    if failures and not (inserted or duplicates):
+        return "falha"
+    return "parcial" if failures else "sucesso"
+
+
+def staleness_warning(competitor: str, latest_valid_until: date | None, today: date) -> str | None:
+    """Aviso quando a validade mais recente do concorrente já passou (site parado?)."""
+    if latest_valid_until is None or latest_valid_until >= today:
+        return None
+    days = (today - latest_valid_until).days
+    return (
+        f"{competitor}: a validade mais recente terminou em {latest_valid_until:%d/%m/%Y} "
+        f"(há {days} dia(s)). O site pode não ter publicado encarte novo."
+    )
+
+
+def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
+    """Coleta, grava no banco, registra a execução e imprime o resumo.
+
+    Devolve o código de saída: 0 = sucesso ou parcial, 1 = falha (o cron usa isso).
+    """
+    competitor = collector.competitor_slug
+    run_id = repo.start_run(competitor)
     try:
         files = collector.collect()
         result = repo.save_collections(files)
-    except Exception:
-        # Erro inesperado: registra o traceback completo no log e sinaliza falha
-        # com código 1 (o cron/agendador usa isso para saber que deu errado).
-        logger.exception("Coleta falhou", extra={"competitor": collector.competitor_slug})
+    except Exception as error:
+        # Erro inesperado: traceback completo no log + execução marcada como falha.
+        logger.exception("Coleta falhou", extra={"competitor": competitor, "run_id": run_id})
+        repo.finish_run(run_id, "falha", message=f"{type(error).__name__}: {error}")
+        print(f"{competitor}: FALHA — {error}", file=sys.stderr)
         return 1
 
     # Conteúdo que o banco já conhecia: apaga a cópia nova do disco (a antiga continua
@@ -71,7 +113,29 @@ def _run(collector: BaseCollector, repo: Repository) -> int:
     for file in result.inserted:
         validity = f"até {file.valid_until:%d/%m/%Y}" if file.valid_until else "validade ?"
         print(f"  {file.local_path.name:<55} {validity:<16} {file.sha256[:12]}")
-    return 0
+
+    failures = len(collector.failed_urls)
+    status = run_status(len(result.inserted), len(result.duplicates), failures)
+    messages: list[str] = []
+    if failures:
+        messages.append(f"{failures} arquivo(s) não baixado(s)")
+        print(f"  ⚠ {failures} arquivo(s) falharam (detalhes no log)")
+
+    today = datetime.now(settings.tz).date()  # "hoje" no fuso da operação, não em UTC
+    if warning := staleness_warning(competitor, repo.latest_valid_until(competitor), today):
+        messages.append(warning)
+        logger.warning(warning, extra={"competitor": competitor})
+        print(f"  ⚠ {warning}")
+
+    repo.finish_run(
+        run_id,
+        status,
+        inserted=len(result.inserted),
+        duplicates=len(result.duplicates),
+        failures=failures,
+        message="; ".join(messages) or None,
+    )
+    return 1 if status == "falha" else 0
 
 
 def _run_sql(settings: Settings, query: str) -> int:
@@ -103,6 +167,7 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox.add_argument("concorrente", help="ex.: assai, fort_atacadista")
 
     sub.add_parser("resumo", help="resumo das coletas gravadas no banco")
+    sub.add_parser("execucoes", help="últimas execuções de coleta (auditoria)")
 
     sql = sub.add_parser("sql", help="executa uma consulta SQL (somente leitura)")
     sql.add_argument("consulta", help='ex.: "SELECT * FROM coletas LIMIT 5"')
@@ -123,14 +188,16 @@ def main(argv: list[str] | None = None) -> int:
         return _run_sql(settings, args.consulta)
     if args.command == "resumo":
         return _run_sql(settings, SUMMARY_SQL)
+    if args.command == "execucoes":
+        return _run_sql(settings, RUNS_SQL)
 
     with Repository(settings.database_path, settings.data_dir) as repo:
         if args.command == "importar":
-            return _run(ManualInboxCollector(settings, args.concorrente), repo)
+            return _run(ManualInboxCollector(settings, args.concorrente), repo, settings)
 
         http = PoliteHttpClient(settings)
         try:
-            return _run(WEB_COLLECTORS[args.fonte](settings, http), repo)
+            return _run(WEB_COLLECTORS[args.fonte](settings, http), repo, settings)
         finally:
             http.close()
 
