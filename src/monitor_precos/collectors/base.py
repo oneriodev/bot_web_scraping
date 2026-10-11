@@ -13,7 +13,7 @@ import re
 import unicodedata
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import ClassVar
@@ -40,6 +40,10 @@ class CollectedFile:
     content_type: ContentType
     sha256: str  # "impressão digital" do conteúdo, usada para não processar duplicados
     collected_at: datetime  # sempre em UTC
+    # Metadados opcionais que a própria página informa (nem toda fonte tem):
+    campaign: str | None = None  # ex.: "Tabloides-fecha-mes-out26-FORMATO"
+    valid_from: date | None = None  # início da validade anunciada na página
+    valid_until: date | None = None  # fim da validade anunciada na página
 
 
 def compute_sha256(content: bytes) -> str:
@@ -86,6 +90,10 @@ class BaseCollector(ABC):
         source_url: str,
         content_type: ContentType,
         collected_at: datetime | None = None,
+        *,
+        campaign: str | None = None,
+        valid_from: date | None = None,
+        valid_until: date | None = None,
     ) -> CollectedFile:
         """Grava o conteúdo em disco e devolve o CollectedFile com o hash calculado."""
         collected_at = collected_at or datetime.now(UTC)
@@ -98,4 +106,7 @@ class BaseCollector(ABC):
             content_type=content_type,
             sha256=compute_sha256(content),
             collected_at=collected_at,
+            campaign=campaign,
+            valid_from=valid_from,
+            valid_until=valid_until,
         )

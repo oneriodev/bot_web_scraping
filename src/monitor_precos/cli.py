@@ -41,7 +41,8 @@ def _run(collector: BaseCollector) -> int:
 
     print(f"{collector.competitor_slug}: {len(files)} arquivo(s) salvo(s)")
     for file in files:
-        print(f"  {file.local_path}  ({file.sha256[:12]})")
+        validity = f"até {file.valid_until:%d/%m/%Y}" if file.valid_until else "validade ?"
+        print(f"  {file.local_path.name:<55} {validity:<16} {file.sha256[:12]}")
     return 0
 
 

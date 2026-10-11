@@ -1,12 +1,17 @@
 """Testes do coletor da Serve Mais com um HTML de exemplo — sem acessar o site."""
 
+from datetime import date
+
+import pytest
 import requests
 
 from monitor_precos.collectors.serve_mais import (
     OFFERS_URL,
     ServeMaisCollector,
+    campaign_key,
     local_filename,
     parse_offer_images,
+    parse_validity,
     to_original_url,
 )
 
@@ -56,6 +61,71 @@ def test_parse_encontra_so_imagens_de_oferta() -> None:
 def test_parse_guarda_url_da_pagina_como_plano_b() -> None:
     [primeira, *_] = parse_offer_images(HTML_EXEMPLO, OFFERS_URL)
     assert primeira.page_url == f"{UPLOADS}/Tabloide-WEB_1-261x300.webp"
+
+
+# ------------------------------------------------------------------ campanha e validade
+@pytest.mark.parametrize(
+    ("arquivo", "campanha"),
+    [
+        ("Tabloides-fecha-mes-out26-FORMATO-WEB_19.webp", "Tabloides-fecha-mes-out26-FORMATO"),
+        ("Dias-Mais-Abr2026-WEB2_12_1.webp", "Dias-Mais-Abr2026"),
+        ("Mensal-Dezembro-WEB_90.webp", "Mensal-Dezembro"),
+        ("Fecha-mes-3.png", "Fecha-mes-3"),
+    ],
+)
+def test_campaign_key(arquivo: str, campanha: str) -> None:
+    assert campaign_key(f"{UPLOADS}/{arquivo}") == campanha
+
+
+@pytest.mark.parametrize(
+    ("texto", "esperado"),
+    [
+        ("De 23/09/2026 a 02/10/2026", (date(2026, 9, 23), date(2026, 10, 2))),
+        ("Em 04/04/2026 e 05/04/2026", (date(2026, 4, 4), date(2026, 4, 5))),
+        ("Bebidas", None),
+        ("De 31/02/2026 a 01/03/2026", (date(2026, 3, 1), date(2026, 3, 1))),  # data inválida
+    ],
+)
+def test_parse_validity(texto: str, esperado) -> None:
+    assert parse_validity(texto) == esperado
+
+
+# Estrutura real da página (resumida): bloco de destaques com data, bloco de evento
+# antigo com data própria, e bloco de categorias SEM data com cards de duas campanhas.
+OUT26 = "Tabloides-fecha-mes-out26-FORMATO"
+HTML_REAL = f"""
+<html><body>
+<div class="e-con e-parent" data-id="9287ce6">
+  <h2>OFERTAS ESPECIAIS</h2><h2>De 23/09/2026 a 02/10/2026</h2>
+  <img src="{UPLOADS}/{OUT26}-WEB_19-261x300.webp">
+</div>
+<div class="e-con e-parent" data-id="ac61282">
+  <img src="{UPLOADS}/Banner-web1.webp">
+  <h2>Em 04/04/2026 e 05/04/2026</h2>
+  <img src="{UPLOADS}/Dias-Mais-Abr2026-WEB_6.webp">
+</div>
+<div class="e-con e-parent" data-id="671e226">
+  <h2>Bebidas</h2><img src="{UPLOADS}/{OUT26}-WEB_24-261x300.webp">
+  <h2>Bazar</h2><img src="{UPLOADS}/Mensal-Dezembro-WEB_90.webp">
+</div>
+</body></html>
+"""
+
+
+def test_validade_por_campanha() -> None:
+    por_arquivo = {
+        img.original_url.rsplit("/", 1)[-1]: (img.campaign, img.valid_from, img.valid_until)
+        for img in parse_offer_images(HTML_REAL, OFFERS_URL)
+    }
+    setembro = (date(2026, 9, 23), date(2026, 10, 2))
+    abril = (date(2026, 4, 4), date(2026, 4, 5))
+
+    assert por_arquivo == {
+        f"{OUT26}-WEB_19.webp": (OUT26, *setembro),  # bloco com a data
+        "Dias-Mais-Abr2026-WEB_6.webp": ("Dias-Mais-Abr2026", *abril),  # data do próprio bloco
+        f"{OUT26}-WEB_24.webp": (OUT26, *setembro),  # herdou pela campanha (seção Bebidas)
+        "Mensal-Dezembro-WEB_90.webp": ("Mensal-Dezembro", None, None),  # sem data: vazio
+    }  # o banner foi ignorado
 
 
 # ------------------------------------------------------------------ coletor com HTTP falso
@@ -113,6 +183,21 @@ def test_coleta_ignora_imagem_com_erro_e_continua(settings) -> None:
     )
     files = ServeMaisCollector(settings, http).collect()
     assert [f.source_url for f in files] == [f"{UPLOADS}/B.webp"]
+
+
+def test_coleta_grava_campanha_e_validade(settings) -> None:
+    http = FakeHttp(
+        HTML_REAL,
+        {
+            f"{UPLOADS}/{OUT26}-WEB_19.webp": b"card-19",
+            f"{UPLOADS}/{OUT26}-WEB_24.webp": b"card-24",
+        },
+    )
+    files = ServeMaisCollector(settings, http).collect()
+
+    assert len(files) == 2  # os outros dois deram 404 e foram pulados sem derrubar a coleta
+    assert all(f.campaign == OUT26 for f in files)
+    assert all(f.valid_until == date(2026, 10, 2) for f in files)
 
 
 def test_coleta_descarta_conteudo_repetido(settings) -> None:

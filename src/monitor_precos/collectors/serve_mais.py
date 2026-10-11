@@ -1,15 +1,21 @@
 """Coletor da Rede Serve Mais (redeservemais.com.br).
 
-O site é um WordPress: as imagens do encarte ficam em /wp-content/uploads/ e a
-página de ofertas mostra MINIATURAS (sufixo "-261x300"). O arquivo original, com
-resolução suficiente para extração, tem o mesmo caminho sem o sufixo.
+O site é um WordPress + Elementor: as imagens do encarte ficam em /wp-content/uploads/
+e a página de ofertas mostra MINIATURAS (sufixo "-261x300"). O arquivo original tem o
+mesmo caminho sem o sufixo.
 
-Fluxo:
-    1. Baixa o HTML da página de ofertas (o HTML puro já traz as URLs; sem Selenium).
-    2. Extrai as URLs de imagem de oferta (src, data-src, srcset...).
-    3. Converte cada miniatura para a URL do original.
-    4. Baixa o original; se ele não existir (404), usa a miniatura como plano B.
-    5. Ignora imagens repetidas na mesma coleta (mesmo hash SHA-256).
+Como a página mistura campanhas (a vigente e outras antigas que nunca foram tiradas
+do ar), cada imagem recebe a CAMPANHA (tirada do nome do arquivo) e a VALIDADE:
+
+  - A validade aparece como título dentro de um bloco ("De 23/09/2026 a 02/10/2026",
+    "Em 04/04/2026 e 05/04/2026"). As imagens desse bloco ensinam qual validade vale
+    para a campanha delas.
+  - Imagens da mesma campanha em OUTROS blocos (ex.: seções Bebidas, Carnes) herdam
+    essa validade pela campanha.
+  - Campanha sem nenhuma validade na página fica com validade vazia (None): a Etapa 4
+    tenta ler a data impressa no card, ou manda para revisão.
+
+A coleta guarda TUDO (camada bruta); filtrar o que está vigente é papel do banco/painel.
 """
 
 from __future__ import annotations
@@ -17,11 +23,12 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import date, datetime
 from pathlib import PurePosixPath
 from urllib.parse import urljoin, urlsplit
 
 import requests
-from bs4 import BeautifulSoup
+from bs4 import BeautifulSoup, Comment, NavigableString, Tag
 
 from monitor_precos.collectors.base import (
     BaseCollector,
@@ -38,9 +45,9 @@ OFFERS_URL = "https://redeservemais.com.br/ofertas_2/"
 
 VALID_EXTENSIONS = (".jpg", ".jpeg", ".png", ".webp")
 
-# Trechos de caminho que indicam imagem decorativa (logos, ícones, redes sociais).
+# Trechos de caminho que indicam imagem decorativa (logos, ícones, banners).
 IGNORED_WORDS = (
-    "logo", "icon", "favicon", "sprite", "facebook", "instagram",
+    "logo", "icon", "favicon", "sprite", "banner", "facebook", "instagram",
     "tiktok", "linkedin", "whatsapp",
 )  # fmt: skip
 
@@ -49,12 +56,49 @@ LAZY_ATTRIBUTES = ("src", "data-src", "data-lazy-src", "data-orig-file")
 
 # "-261x300" logo antes da extensão: padrão das miniaturas do WordPress.
 _THUMBNAIL_SUFFIX = re.compile(r"-\d+x\d+(?=\.[A-Za-z0-9]+$)")
+# Final do nome que numera os cards de uma campanha: "-WEB_19", "-WEB2_12_1", "-web1".
+_CARD_NUMBER_SUFFIX = re.compile(r"[-_]?web\d*(?:_\d+)*$", re.IGNORECASE)
+# Texto de validade: "De 23/09/2026 a 02/10/2026" ou "Em 04/04/2026 e 05/04/2026".
+_VALIDITY_TEXT = re.compile(r"\b(?:de|em)\b.*\d{2}/\d{2}/\d{4}", re.IGNORECASE)
+_DATE = re.compile(r"\d{2}/\d{2}/\d{4}")
 
 
+# ------------------------------------------------------------------ funções puras
 def to_original_url(url: str) -> str:
     """Remove o sufixo de miniatura do WordPress: ...WEB_23-261x300.webp → ...WEB_23.webp"""
     parts = urlsplit(url)
     return parts._replace(path=_THUMBNAIL_SUFFIX.sub("", parts.path)).geturl()
+
+
+def campaign_key(url: str) -> str:
+    """Nome da campanha a partir do arquivo: ...out26-FORMATO-WEB_19.webp → ...out26-FORMATO"""
+    stem = PurePosixPath(urlsplit(url).path).stem
+    return _CARD_NUMBER_SUFFIX.sub("", stem) or stem
+
+
+def parse_validity(text: str) -> tuple[date, date] | None:
+    """Extrai (início, fim) de textos como "De 23/09/2026 a 02/10/2026". None se não houver."""
+    if not _VALIDITY_TEXT.search(text):
+        return None
+    dates: list[date] = []
+    for raw in _DATE.findall(text):
+        try:
+            dates.append(datetime.strptime(raw, "%d/%m/%Y").date())
+        except ValueError:  # ex.: 31/02/2026
+            continue
+    return (min(dates), max(dates)) if dates else None
+
+
+def local_filename(url: str) -> str:
+    """Nome local com ano/mês do upload, para não colidir arquivos de meses diferentes.
+
+    .../uploads/2026/09/Tabloide_23.webp → 2026_09_Tabloide_23.webp
+    """
+    parts = PurePosixPath(urlsplit(url).path).parts
+    if "uploads" in parts:
+        after_uploads = parts[parts.index("uploads") + 1 :]
+        return "_".join(after_uploads)
+    return parts[-1]
 
 
 def _largest_from_srcset(srcset: str) -> str | None:
@@ -79,57 +123,81 @@ def _is_offer_image(url: str) -> bool:
     )
 
 
-def local_filename(url: str) -> str:
-    """Nome local com ano/mês do upload, para não colidir arquivos de meses diferentes.
+def _top_block(element: Tag) -> str:
+    """data-id do container Elementor de nível mais alto que contém o elemento."""
+    block = ""
+    for parent in element.parents:
+        if "e-parent" in (parent.get("class") or []):
+            block = parent.get("data-id", "")
+    return block
 
-    .../uploads/2026/09/Tabloide_23.webp → 2026_09_Tabloide_23.webp
-    """
-    parts = PurePosixPath(urlsplit(url).path).parts
-    if "uploads" in parts:
-        after_uploads = parts[parts.index("uploads") + 1 :]
-        return "_".join(after_uploads)
-    return parts[-1]
+
+def _image_urls(img: Tag, page_url: str) -> list[str]:
+    """URLs absolutas candidatas de uma <img> (src, lazy loading e maior do srcset)."""
+    candidates = [img.get(attr) for attr in LAZY_ATTRIBUTES]
+    if srcset := img.get("srcset") or img.get("data-srcset"):
+        candidates.append(_largest_from_srcset(srcset))
+    return [
+        urljoin(page_url, raw.strip())
+        for raw in candidates
+        if raw and not raw.startswith("data:")  # "data:" = placeholder embutido
+    ]
 
 
 @dataclass(frozen=True, slots=True)
 class OfferImage:
-    """Uma imagem de oferta: a URL do original e a URL que aparece na página (plano B)."""
+    """Uma imagem de oferta encontrada na página."""
 
-    original_url: str
-    page_url: str
+    original_url: str  # URL do arquivo em resolução original
+    page_url: str  # URL que aparece na página (plano B se o original não existir)
+    campaign: str
+    valid_from: date | None = None
+    valid_until: date | None = None
 
 
 def parse_offer_images(html: str, page_url: str) -> list[OfferImage]:
-    """Extrai do HTML as imagens de oferta, já com a URL do original calculada.
+    """Extrai do HTML as imagens de oferta com campanha e validade.
 
     Função "pura" (não acessa rede nem disco): fácil de testar com um HTML de exemplo.
     """
     soup = BeautifulSoup(html, "html.parser")
-
-    # Cabeçalho, rodapé e menu se repetem em todas as páginas e nunca têm encarte.
-    for tag in soup.select("header, footer, nav"):
+    # Cabeçalho, rodapé e menu nunca têm encarte; script/style não têm texto visível.
+    for tag in soup.select("header, footer, nav, script, style"):
         tag.decompose()
 
-    found: dict[str, OfferImage] = {}  # chave = URL do original (evita duplicadas)
-    for img in soup.find_all("img"):
-        candidates = [img.get(attr) for attr in LAZY_ATTRIBUTES]
-        if srcset := img.get("srcset") or img.get("data-srcset"):
-            candidates.append(_largest_from_srcset(srcset))
+    found: dict[str, tuple[str, str]] = {}  # original → (url na página, campanha)
+    block_validity: dict[str, tuple[date, date]] = {}  # bloco → última validade vista
+    campaign_validity: dict[str, tuple[date, date]] = {}  # campanha → validade
 
-        for raw in candidates:
-            if not raw or raw.startswith("data:"):  # "data:" = placeholder embutido
-                continue
-            absolute = urljoin(page_url, raw.strip())
-            if _is_offer_image(absolute):
+    # Percorre a página NA ORDEM em que os elementos aparecem.
+    for node in soup.descendants:
+        if isinstance(node, NavigableString) and not isinstance(node, Comment):
+            validity = parse_validity(" ".join(node.split()))
+            if validity and node.parent is not None:
+                block_validity[_top_block(node.parent)] = validity
+
+        elif isinstance(node, Tag) and node.name == "img":
+            block = _top_block(node)
+            for absolute in _image_urls(node, page_url):
+                if not _is_offer_image(absolute):
+                    continue
                 original = to_original_url(absolute)
-                # setdefault guarda só a 1ª ocorrência, mantendo a ordem da página.
-                found.setdefault(original, OfferImage(original, absolute))
+                campaign = campaign_key(original)
+                found.setdefault(original, (absolute, campaign))  # 1ª ocorrência vence
+                if block in block_validity:
+                    # Esta imagem está num bloco com data: a campanha dela aprende a validade.
+                    campaign_validity.setdefault(campaign, block_validity[block])
 
-    return list(found.values())
+    images: list[OfferImage] = []
+    for original, (on_page, campaign) in found.items():
+        valid_from, valid_until = campaign_validity.get(campaign, (None, None))
+        images.append(OfferImage(original, on_page, campaign, valid_from, valid_until))
+    return images
 
 
+# ------------------------------------------------------------------ coletor
 class ServeMaisCollector(BaseCollector):
-    """Baixa as imagens do encarte vigente da Rede Serve Mais."""
+    """Baixa as imagens de oferta da Rede Serve Mais, com campanha e validade."""
 
     competitor_slug = "serve_mais"
     competitor_name = "Rede Serve Mais"
@@ -165,8 +233,17 @@ class ServeMaisCollector(BaseCollector):
                 continue  # mesma imagem publicada com outro nome: não salva de novo
             seen_hashes.add(digest)
 
-            file = self.save_file(content, local_filename(final_url), final_url, ContentType.IMAGE)
-            collected.append(file)
+            collected.append(
+                self.save_file(
+                    content,
+                    local_filename(final_url),
+                    final_url,
+                    ContentType.IMAGE,
+                    campaign=image.campaign,
+                    valid_from=image.valid_from,
+                    valid_until=image.valid_until,
+                )
+            )
 
         logger.info(
             "Coleta concluída",
