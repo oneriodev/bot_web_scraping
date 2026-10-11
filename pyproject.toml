@@ -33,7 +33,6 @@ packages = ["src/monitor_precos"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
-extend-exclude = ["scraper", "config", "utils", "main.py"]  # código legado, removido na parte 2
 
 [tool.ruff.lint]
 # E/F: erros básicos | I: ordem dos imports | N: nomes PEP 8 | UP: sintaxe moderna

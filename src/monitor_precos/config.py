@@ -22,6 +22,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 # e não finge ser navegador. Pode ser trocado pela variável USER_AGENT no .env.
 DEFAULT_USER_AGENT = default_user_agent()
 
+
 def _resolve_path(raw: str) -> Path:
     """Caminhos relativos no .env são relativos à raiz do projeto, não à pasta atual."""
     path = Path(raw).expanduser()
