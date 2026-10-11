@@ -1,0 +1,46 @@
+[project]
+name = "monitor-precos"
+version = "0.1.0"
+description = "Monitor de preços de concorrentes para o varejo de Cuiabá: coleta, extração, de-para e painel."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "requests>=2.32",
+    "beautifulsoup4>=4.12",
+    "python-dotenv>=1.0",
+]
+
+# Dependências só de desenvolvimento (não vão para "produção").
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+]
+
+# Cria o comando `monitor-precos` no terminal, apontando para a função main() do cli.py.
+[project.scripts]
+monitor-precos = "monitor_precos.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/monitor_precos"]
+
+# ---------------------------------------------------------------- Ruff (lint + formatação)
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+extend-exclude = ["scraper", "config", "utils", "main.py"]  # código legado, removido na parte 2
+
+[tool.ruff.lint]
+# E/F: erros básicos | I: ordem dos imports | N: nomes PEP 8 | UP: sintaxe moderna
+# B: bugs comuns | SIM: simplificações | PTH: preferir pathlib
+select = ["E", "F", "I", "N", "UP", "B", "SIM", "PTH"]
+
+# ---------------------------------------------------------------- pytest
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
