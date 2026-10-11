@@ -13,12 +13,14 @@ from functools import lru_cache
 from pathlib import Path
 
 from dotenv import load_dotenv
+from requests.utils import default_user_agent
 
 # Raiz do repositório: src/monitor_precos/config.py → sobe 3 níveis.
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DEFAULT_USER_AGENT = "MonitorPrecosBot/0.1 (+https://github.com/oneriodev/bot_web_scraping)"
-
+# User-Agent padrão do requests (ex.: "python-requests/2.34.2"): não revela quem coleta
+# e não finge ser navegador. Pode ser trocado pela variável USER_AGENT no .env.
+DEFAULT_USER_AGENT = default_user_agent()
 
 def _resolve_path(raw: str) -> Path:
     """Caminhos relativos no .env são relativos à raiz do projeto, não à pasta atual."""

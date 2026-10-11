@@ -13,7 +13,7 @@ def test_valores_padrao(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None
 
     assert settings.data_dir == PROJECT_ROOT / "data"
     assert settings.raw_dir == PROJECT_ROOT / "data" / "raw"
-    assert "MonitorPrecosBot" in settings.user_agent  # o bot se identifica
+    assert settings.user_agent.startswith("python-requests/")  # não revela quem coleta
     assert settings.request_delay_seconds >= 1  # nunca martelar o site
 
 
