@@ -4,6 +4,8 @@ Exemplos:
     uv run monitor-precos fontes
     uv run monitor-precos coletar serve_mais
     uv run monitor-precos importar assai      # arquivos de data/inbox/assai/
+    uv run monitor-precos extrair --limite 3
+    uv run monitor-precos ofertas
     uv run monitor-precos resumo
     uv run monitor-precos execucoes
     uv run monitor-precos sql "SELECT concorrente, COUNT(*) FROM coletas GROUP BY 1"
@@ -24,6 +26,7 @@ from monitor_precos.collectors.http_client import PoliteHttpClient
 from monitor_precos.collectors.manual_inbox import ManualInboxCollector
 from monitor_precos.collectors.serve_mais import ServeMaisCollector
 from monitor_precos.config import Settings, get_settings
+from monitor_precos.extractors.service import ExtractionService
 from monitor_precos.logging_config import setup_logging
 from monitor_precos.storage.repository import Repository
 
@@ -62,6 +65,26 @@ SELECT
 FROM execucoes
 ORDER BY id DESC
 LIMIT 15
+"""
+
+OFFERS_SQL = """
+SELECT
+    o.id,
+    c.concorrente,
+    o.produto,
+    o.marca,
+    concat_ws(' ', o.quantidade, o.unidade)        AS embalagem,
+    o.preco_regular                                AS de,
+    o.preco_promocional                            AS por,
+    o.condicao_especial                            AS condicao,
+    strftime(o.validade_fim, '%d/%m/%Y')           AS valido_ate,
+    o.confianca,
+    o.status_revisao,
+    regexp_extract(c.caminho_arquivo, '[^/]+$')    AS arquivo
+FROM ofertas_extraidas o
+JOIN coletas c ON c.id = o.coleta_id
+ORDER BY o.id DESC
+LIMIT 50
 """
 
 
@@ -110,6 +133,9 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
     # "Já conhecidos" = pulados pela URL (nem baixados) + baixados com hash repetido.
     known = collector.skipped_count + len(result.duplicates)
     print(f"{competitor}: {len(result.inserted)} arquivo(s) novo(s), {known} já conhecido(s)")
+    
+    if result.repaired:
+        print(f"  ↺ {len(result.repaired)} arquivo(s) que tinham sumido do disco foram restaurados")
     for file in result.inserted:
         validity = f"até {file.valid_until:%d/%m/%Y}" if file.valid_until else "validade ?"
         print(f"  {file.local_path.name:<55} {validity:<16} {file.sha256[:12]}")
@@ -143,6 +169,48 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
     return 1 if status == "falha" else 0
 
 
+def _run_extraction(settings: Settings, args: argparse.Namespace) -> int:
+    """Extrai ofertas das imagens pendentes usando o LLM configurado."""
+    if not settings.gemini_api_key:
+        print(
+            "GEMINI_API_KEY não definida. Crie a chave em https://aistudio.google.com "
+            "e coloque no arquivo .env (nunca no .env.example).",
+            file=sys.stderr,
+        )
+        return 1
+
+    # Import tardio: o SDK do Google só é carregado quando o comando realmente precisa.
+    from monitor_precos.extractors.gemini import GeminiExtractor
+
+    extractor = GeminiExtractor(settings.gemini_api_key, settings.gemini_model)
+    limit = args.limite or settings.extraction_max_per_run
+
+    with Repository(settings.database_path, settings.data_dir) as repo:
+        service = ExtractionService(
+            repo,
+            extractor,
+            min_confidence=settings.extraction_min_confidence,
+            delay_seconds=settings.llm_delay_seconds,
+        )
+        summary = service.run(
+            competitor=args.concorrente, limit=limit, include_errors=args.incluir_erros
+        )
+
+    if summary.processed == 0:
+        print("Nada pendente para extrair.")
+        return 0
+
+    print(
+        f"Extração ({extractor.engine}): {summary.processed} imagem(ns) — "
+        f"{summary.extracted} ok, {summary.review} para revisão, {summary.errors} com erro"
+    )
+    print(
+        f"  {summary.offers} oferta(s) gravada(s) | tokens: "
+        f"{summary.input_tokens} de entrada, {summary.output_tokens} de saída"
+    )
+    return 1 if summary.errors == summary.processed else 0
+
+
 def _run_sql(settings: Settings, query: str) -> int:
     """Executa uma consulta SOMENTE LEITURA e imprime o resultado como tabela."""
     if not settings.database_path.exists():
@@ -171,6 +239,16 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox = sub.add_parser("importar", help="importa arquivos de data/inbox/<concorrente>/")
     inbox.add_argument("concorrente", help="ex.: assai, fort_atacadista")
 
+    extract = sub.add_parser("extrair", help="extrai ofertas das imagens pendentes (LLM)")
+    extract.add_argument("--concorrente", default=None, help="só deste concorrente")
+    extract.add_argument(
+        "--limite", type=int, default=None, help="máx. de imagens (padrão: EXTRACTION_MAX_PER_RUN)"
+    )
+    extract.add_argument(
+        "--incluir-erros", action="store_true", help="tenta de novo as que deram erro"
+    )
+
+    sub.add_parser("ofertas", help="últimas ofertas extraídas")
     sub.add_parser("resumo", help="resumo das coletas gravadas no banco")
     sub.add_parser("execucoes", help="últimas execuções de coleta (auditoria)")
 
@@ -195,6 +273,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_sql(settings, SUMMARY_SQL)
     if args.command == "execucoes":
         return _run_sql(settings, RUNS_SQL)
+    if args.command == "ofertas":
+        return _run_sql(settings, OFFERS_SQL)
+    if args.command == "extrair":
+        return _run_extraction(settings, args)
 
     with Repository(settings.database_path, settings.data_dir) as repo:
         if args.command == "importar":

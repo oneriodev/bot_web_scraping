@@ -16,11 +16,14 @@ from dataclasses import dataclass, field
 from datetime import UTC, date, datetime
 from pathlib import Path
 from types import TracebackType
-from typing import Self
+from typing import TYPE_CHECKING, Self
 
 import duckdb
 
 from monitor_precos.collectors.base import CollectedFile
+
+if TYPE_CHECKING:  # só para os type hints; não carrega o Pydantic ao importar o módulo
+    from monitor_precos.extractors.schemas import ExtractedOffer
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +64,9 @@ class SaveResult:
     inserted: list[CollectedFile] = field(default_factory=list)
     # (arquivo recém-baixado, caminho onde o MESMO conteúdo já estava guardado)
     duplicates: list[tuple[CollectedFile, Path]] = field(default_factory=list)
+    # Conteúdo que o banco conhecia, mas cujo arquivo tinha sumido do disco:
+    # o registro passou a apontar para a cópia nova.
+    repaired: list[CollectedFile] = field(default_factory=list)
 
 
 class Repository:
@@ -110,7 +116,8 @@ class Repository:
 
     # ------------------------------------------------------------ coletas
     def save_collections(self, files: list[CollectedFile]) -> SaveResult:
-        """Grava os arquivos coletados. Conteúdo já conhecido (mesmo sha256) é ignorado.
+        """Grava os arquivos coletados. Conteúdo já conhecido (mesmo sha256) é ignorado,
+        a menos que o arquivo guardado tenha sumido do disco: aí o registro é reparado.
 
         Tudo acontece numa TRANSAÇÃO: ou grava todos, ou nenhum (se der erro no meio).
         """
@@ -123,7 +130,25 @@ class Repository:
                         "SELECT caminho_arquivo FROM coletas WHERE sha256 = ?", [file.sha256]
                     ).fetchone()
                     if existing:
-                        result.duplicates.append((file, self._from_stored_path(existing[0])))
+                        stored = self._from_stored_path(existing[0])
+                        if stored.exists():
+                            result.duplicates.append((file, stored))
+                            continue
+                        # Banco e disco dessincronizados: o banco conhecia o conteúdo, mas
+                        # o arquivo sumiu. Aponta para a cópia nova e, se a extração tinha
+                        # dado erro por causa disso, devolve a coleta para a fila.
+                        cursor.execute(
+                            """
+                            UPDATE coletas
+                            SET caminho_arquivo = ?,
+                                status_extracao = CASE WHEN status_extracao = 'erro'
+                                                       THEN 'pendente'
+                                                       ELSE status_extracao END
+                            WHERE sha256 = ?
+                            """,
+                            [self._to_stored_path(file.local_path), file.sha256],
+                        )
+                        result.repaired.append(file)
                         continue
 
                     # Parâmetros "?" — NUNCA monte SQL concatenando strings (SQL injection).
@@ -154,7 +179,11 @@ class Repository:
 
         logger.info(
             "Coletas gravadas no banco",
-            extra={"inserted": len(result.inserted), "duplicates": len(result.duplicates)},
+            extra={
+                "inserted": len(result.inserted),
+                "duplicates": len(result.duplicates),
+                "repaired": len(result.repaired),
+            },
         )
         return result
 
@@ -166,6 +195,31 @@ class Repository:
             sql += " AND concorrente = ?"
             params.append(competitor)
         sql += " ORDER BY coletado_em, id"
+        return [
+            self._row_to_collection(row) for row in self.connection.execute(sql, params).fetchall()
+        ]
+
+    def collections_to_extract(
+        self,
+        competitor: str | None = None,
+        *,
+        include_errors: bool = False,
+        limit: int | None = None,
+    ) -> list[StoredCollection]:
+        """Fila da extração com LLM: só imagens por enquanto (PDF entra na Etapa 4.2)."""
+        statuses = ["pendente", "erro"] if include_errors else ["pendente"]
+        placeholders = ", ".join("?" for _ in statuses)
+        sql = (
+            f"SELECT {_COLLECTION_COLUMNS} FROM coletas "
+            f"WHERE tipo_conteudo = 'image' AND status_extracao IN ({placeholders})"
+        )
+        params: list[object] = list(statuses)
+        if competitor:
+            sql += " AND concorrente = ?"
+            params.append(competitor)
+        sql += " ORDER BY coletado_em, id"
+        if limit is not None:
+            sql += f" LIMIT {int(limit)}"  # int() garante que só entra um número no SQL
         return [
             self._row_to_collection(row) for row in self.connection.execute(sql, params).fetchall()
         ]
@@ -192,6 +246,63 @@ class Repository:
             collected_at=at,
             status=status,
         )
+
+    # ------------------------------------------------------------ ofertas
+    def save_offers(
+        self,
+        collection_id: int,
+        offers: list[ExtractedOffer],
+        *,
+        engine: str,
+        collection_status: str,
+    ) -> None:
+        """Grava as ofertas de uma coleta e atualiza o status dela, numa única transação.
+
+        Apaga ofertas antigas da mesma coleta antes: reprocessar não duplica nada.
+        """
+        if collection_status not in EXTRACTION_STATUSES:
+            raise ValueError(f"Status inválido: {collection_status!r}.")
+        review_status = "pendente" if collection_status == "revisao" else "automatico"
+        now = _utc_now()
+
+        with self.connection.cursor() as cursor:
+            cursor.begin()
+            try:
+                cursor.execute("DELETE FROM ofertas_extraidas WHERE coleta_id = ?", [collection_id])
+                cursor.execute(
+                    "UPDATE coletas SET status_extracao = ? WHERE id = ?",
+                    [collection_status, collection_id],
+                )
+                for offer in offers:
+                    cursor.execute(
+                        """
+                        INSERT INTO ofertas_extraidas (
+                            coleta_id, produto, marca, quantidade, unidade, preco_regular,
+                            preco_promocional, condicao_especial, validade_inicio, validade_fim,
+                            confianca, motor, extraido_em, status_revisao
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        [
+                            collection_id,
+                            offer.product,
+                            offer.brand,
+                            offer.quantity,
+                            offer.unit,
+                            offer.regular_price,
+                            offer.promo_price,
+                            offer.special_condition,
+                            offer.valid_from,
+                            offer.valid_until,
+                            round(offer.confidence, 3),
+                            engine,
+                            now,
+                            review_status,
+                        ],
+                    )
+                cursor.commit()
+            except Exception:
+                cursor.rollback()
+                raise
 
     # ------------------------------------------------------------ execuções
     def start_run(self, competitor: str) -> int:
@@ -230,11 +341,14 @@ class Repository:
         )
 
     def known_source_urls(self, competitor: str) -> set[str]:
-        """URLs de origem já gravadas para o concorrente (para não baixar de novo)."""
+        """URLs já coletadas CUJO ARQUIVO AINDA EXISTE no disco (para não baixar de novo).
+
+        Se o arquivo foi apagado, a URL fica de fora e o coletor baixa outra vez.
+        """
         rows = self.connection.execute(
-            "SELECT origem_url FROM coletas WHERE concorrente = ?", [competitor]
+            "SELECT origem_url, caminho_arquivo FROM coletas WHERE concorrente = ?", [competitor]
         ).fetchall()
-        return {row[0] for row in rows}
+        return {url for url, path in rows if self._from_stored_path(path).exists()}
 
     def latest_valid_until(self, competitor: str) -> date | None:
         """A validade mais distante já anunciada pelo concorrente (None se nunca houve)."""

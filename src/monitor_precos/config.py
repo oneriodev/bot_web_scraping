@@ -8,7 +8,7 @@ isso só acontece quando alguém chama `ensure_directories()` explicitamente.
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -40,6 +40,14 @@ class Settings:
     request_delay_seconds: float
     max_retries: int
     timezone: str = "America/Cuiaba"  # fuso da operação: define o que é "hoje"
+
+    # ---- Extração com LLM (Etapa 4)
+    # repr=False: a chave NUNCA aparece se alguém fizer print(settings) ou logar o objeto.
+    gemini_api_key: str | None = field(default=None, repr=False)
+    gemini_model: str = "gemini-2.5-flash"
+    llm_delay_seconds: float = 4.0  # pausa entre chamadas ao LLM
+    extraction_min_confidence: float = 0.8  # abaixo disso, vai para revisão humana
+    extraction_max_per_run: int = 20  # teto de imagens por execução (controle de custo)
 
     @property
     def tz(self) -> ZoneInfo:
@@ -84,6 +92,11 @@ def load_settings(env_file: Path | None = None) -> Settings:
         request_delay_seconds=float(os.getenv("REQUEST_DELAY_SECONDS", "2.0")),
         max_retries=int(os.getenv("MAX_RETRIES", "3")),
         timezone=os.getenv("TIMEZONE", "America/Cuiaba"),
+        gemini_api_key=os.getenv("GEMINI_API_KEY") or None,
+        gemini_model=os.getenv("GEMINI_MODEL", "gemini-2.5-flash"),
+        llm_delay_seconds=float(os.getenv("LLM_DELAY_SECONDS", "4")),
+        extraction_min_confidence=float(os.getenv("EXTRACTION_MIN_CONFIDENCE", "0.8")),
+        extraction_max_per_run=int(os.getenv("EXTRACTION_MAX_PER_RUN", "20")),
     )
 
 

@@ -147,3 +147,25 @@ def test_known_source_urls(repo, settings) -> None:
     repo.save_collections([_file(settings, "h1", name="a.webp")])
     assert repo.known_source_urls("serve_mais") == {"https://site/a.webp"}
     assert repo.known_source_urls("assai") == set()
+
+
+
+def test_arquivo_sumido_e_restaurado(repo, settings) -> None:
+    original = _file(settings, "h1", day="2026-10-11")
+    repo.save_collections([original])
+    [coleta] = repo.pending_collections()
+    repo.set_extraction_status(coleta.id, "erro")  # a extração falhou por falta do arquivo
+
+    original.local_path.unlink()  # alguém apagou a pasta
+    assert repo.known_source_urls("serve_mais") == set()  # então o coletor baixa de novo
+
+    nova_copia = _file(settings, "h1", day="2026-10-13")
+    result = repo.save_collections([nova_copia])
+
+    assert result.repaired == [nova_copia]
+    assert result.duplicates == []
+    caminho, status = repo.connection.execute(
+        "SELECT caminho_arquivo, status_extracao FROM coletas"
+    ).fetchone()
+    assert caminho == "raw/serve_mais/2026-10-13/a.webp"
+    assert status == "pendente"  # voltou para a fila

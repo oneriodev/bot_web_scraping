@@ -66,5 +66,6 @@ def setup_logging(log_dir: Path, level: str = "INFO") -> None:
 
     # Bibliotecas de terceiros falam demais em DEBUG; deixamos só avisos delas.
     logging.getLogger("urllib3").setLevel(logging.WARNING)
-
+    logging.getLogger("httpx").setLevel(logging.WARNING)
+    logging.getLogger("google_genai").setLevel(logging.WARNING)
     root._monitor_precos_configured = True  # type: ignore[attr-defined]
