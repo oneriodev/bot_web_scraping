@@ -130,11 +130,17 @@ def test_validade_por_campanha() -> None:
 
 # ------------------------------------------------------------------ coletor com HTTP falso
 class FakeHttp:
-    """Imita o PoliteHttpClient: responde a partir de dicionários, sem rede."""
+    """Imita o PoliteHttpClient: responde a partir de dicionários, sem rede.
 
-    def __init__(self, html: str, files: dict[str, bytes]) -> None:
+    URLs fora de `files` respondem 404; `errors` força outro código (ex.: 503).
+    """
+
+    def __init__(
+        self, html: str, files: dict[str, bytes], errors: dict[str, int] | None = None
+    ) -> None:
         self.html = html
         self.files = files
+        self.errors = errors or {}
         self.requested: list[str] = []
 
     def get_text(self, url: str) -> str:
@@ -142,10 +148,10 @@ class FakeHttp:
 
     def get_bytes(self, url: str) -> tuple[bytes, str]:
         self.requested.append(url)
-        if url not in self.files:
+        if url in self.errors or url not in self.files:
             response = requests.Response()
-            response.status_code = 404
-            raise requests.HTTPError("404", response=response)
+            response.status_code = self.errors.get(url, 404)
+            raise requests.HTTPError(str(response.status_code), response=response)
         return self.files[url], "image/webp"
 
 
@@ -176,15 +182,45 @@ def test_coleta_usa_miniatura_quando_original_nao_existe(settings) -> None:
     assert file.source_url == miniatura
 
 
-def test_coleta_ignora_imagem_com_erro_e_continua(settings) -> None:
+def test_imagem_apagada_do_site_conta_como_indisponivel(settings) -> None:
     http = FakeHttp(
         _html_com(f"{UPLOADS}/sumiu.webp", f"{UPLOADS}/B.webp"),
         {f"{UPLOADS}/B.webp": b"imagem-B"},
     )
     collector = ServeMaisCollector(settings, http)
     files = collector.collect()
+
+    assert [f.source_url for f in files] == [f"{UPLOADS}/B.webp"]  # a coleta continua
+    assert collector.missing_urls == [f"{UPLOADS}/sumiu.webp"]  # 404 = indisponível
+    assert collector.failed_urls == []  # ...e NÃO é falha
+
+
+def test_erro_de_servidor_conta_como_falha(settings) -> None:
+    http = FakeHttp(
+        _html_com(f"{UPLOADS}/A.webp", f"{UPLOADS}/B.webp"),
+        {f"{UPLOADS}/B.webp": b"imagem-B"},
+        errors={f"{UPLOADS}/A.webp": 503},
+    )
+    collector = ServeMaisCollector(settings, http)
+    collector.collect()
+
+    assert collector.failed_urls == [f"{UPLOADS}/A.webp"]  # pode dar certo amanhã
+    assert collector.missing_urls == []
+
+
+def test_pula_urls_ja_coletadas(settings) -> None:
+    http = FakeHttp(
+        _html_com(f"{UPLOADS}/A-261x300.webp", f"{UPLOADS}/B-261x300.webp"),
+        {f"{UPLOADS}/A.webp": b"imagem-A", f"{UPLOADS}/B.webp": b"imagem-B"},
+    )
+    collector = ServeMaisCollector(settings, http)
+    collector.known_urls = {f"{UPLOADS}/A.webp"}  # A já está no banco
+
+    files = collector.collect()
+
     assert [f.source_url for f in files] == [f"{UPLOADS}/B.webp"]
-    assert collector.failed_urls == [f"{UPLOADS}/sumiu.webp"]  # a falha fica registrada
+    assert http.requested == [f"{UPLOADS}/B.webp"]  # A nem foi baixada
+    assert collector.skipped_count == 1
 
 
 def test_coleta_grava_campanha_e_validade(settings) -> None:

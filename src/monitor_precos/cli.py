@@ -91,6 +91,7 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
     competitor = collector.competitor_slug
     run_id = repo.start_run(competitor)
     try:
+        collector.known_urls = repo.known_source_urls(competitor)
         files = collector.collect()
         result = repo.save_collections(files)
     except Exception as error:
@@ -106,17 +107,21 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
         if file.local_path.resolve() != stored_path.resolve():
             file.local_path.unlink(missing_ok=True)
 
-    print(
-        f"{collector.competitor_slug}: {len(result.inserted)} arquivo(s) novo(s), "
-        f"{len(result.duplicates)} já conhecido(s)"
-    )
+    # "Já conhecidos" = pulados pela URL (nem baixados) + baixados com hash repetido.
+    known = collector.skipped_count + len(result.duplicates)
+    print(f"{competitor}: {len(result.inserted)} arquivo(s) novo(s), {known} já conhecido(s)")
     for file in result.inserted:
         validity = f"até {file.valid_until:%d/%m/%Y}" if file.valid_until else "validade ?"
         print(f"  {file.local_path.name:<55} {validity:<16} {file.sha256[:12]}")
 
     failures = len(collector.failed_urls)
-    status = run_status(len(result.inserted), len(result.duplicates), failures)
+    missing = len(collector.missing_urls)
+    status = run_status(len(result.inserted), known, failures)
     messages: list[str] = []
+    if missing:
+        # Informativo: link quebrado no site do concorrente não é falha da coleta.
+        messages.append(f"{missing} imagem(ns) citada(s) na página não existe(m) mais (404)")
+        print(f"  ℹ {missing} imagem(ns) citada(s) na página não existe(m) mais no site")
     if failures:
         messages.append(f"{failures} arquivo(s) não baixado(s)")
         print(f"  ⚠ {failures} arquivo(s) falharam (detalhes no log)")
@@ -124,14 +129,14 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
     today = datetime.now(settings.tz).date()  # "hoje" no fuso da operação, não em UTC
     if warning := staleness_warning(competitor, repo.latest_valid_until(competitor), today):
         messages.append(warning)
+        # O logger já mostra no console (nível WARNING) e grava no arquivo JSON.
         logger.warning(warning, extra={"competitor": competitor})
-        print(f"  ⚠ {warning}")
 
     repo.finish_run(
         run_id,
         status,
         inserted=len(result.inserted),
-        duplicates=len(result.duplicates),
+        duplicates=known,
         failures=failures,
         message="; ".join(messages) or None,
     )

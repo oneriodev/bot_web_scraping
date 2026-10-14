@@ -229,6 +229,13 @@ class Repository:
             [_utc_now(), status, inserted, duplicates, failures, message, run_id],
         )
 
+    def known_source_urls(self, competitor: str) -> set[str]:
+        """URLs de origem já gravadas para o concorrente (para não baixar de novo)."""
+        rows = self.connection.execute(
+            "SELECT origem_url FROM coletas WHERE concorrente = ?", [competitor]
+        ).fetchall()
+        return {row[0] for row in rows}
+
     def latest_valid_until(self, competitor: str) -> date | None:
         """A validade mais distante já anunciada pelo concorrente (None se nunca houve)."""
         row = self.connection.execute(

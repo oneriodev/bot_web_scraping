@@ -140,3 +140,10 @@ def test_latest_valid_until(repo, settings) -> None:
     assert repo.latest_valid_until("serve_mais") is None
     repo.save_collections([_file(settings, "h1")])
     assert repo.latest_valid_until("serve_mais") == date(2026, 10, 2)
+
+
+def test_known_source_urls(repo, settings) -> None:
+    assert repo.known_source_urls("serve_mais") == set()
+    repo.save_collections([_file(settings, "h1", name="a.webp")])
+    assert repo.known_source_urls("serve_mais") == {"https://site/a.webp"}
+    assert repo.known_source_urls("assai") == set()

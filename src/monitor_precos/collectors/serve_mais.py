@@ -195,6 +195,12 @@ def parse_offer_images(html: str, page_url: str) -> list[OfferImage]:
     return images
 
 
+def _is_not_found(error: requests.RequestException) -> bool:
+    """True se o erro for um 404 (arquivo não existe mais no servidor)."""
+    response = getattr(error, "response", None)
+    return response is not None and response.status_code == 404
+
+
 # ------------------------------------------------------------------ coletor
 class ServeMaisCollector(BaseCollector):
     """Baixa as imagens de oferta da Rede Serve Mais, com campanha e validade."""
@@ -207,6 +213,8 @@ class ServeMaisCollector(BaseCollector):
         self.http = http
 
     def collect(self) -> list[CollectedFile]:
+        self.skipped_count = 0
+        self.missing_urls = []
         self.failed_urls = []
         html = self.http.get_text(OFFERS_URL)
         images = parse_offer_images(html, OFFERS_URL)
@@ -219,15 +227,27 @@ class ServeMaisCollector(BaseCollector):
         seen_hashes: set[str] = set()
 
         for image in images:
+            # Já coletada antes (pelo original ou pela miniatura)? Não baixa de novo:
+            # economiza tempo e poupa o servidor do concorrente.
+            if image.original_url in self.known_urls or image.page_url in self.known_urls:
+                self.skipped_count += 1
+                continue
+
             try:
                 content, final_url = self._download(image)
             except requests.RequestException as error:
                 # Uma imagem com problema não derruba a coleta inteira.
-                logger.warning(
-                    "Falha ao baixar imagem",
-                    extra={"url": image.original_url, "error": str(error)},
-                )
-                self.failed_urls.append(image.original_url)
+                if _is_not_found(error):
+                    # A página ainda cita a imagem, mas o arquivo foi apagado do servidor.
+                    # Não é falha nossa nem se resolve tentando de novo.
+                    logger.info("Imagem não existe mais no site", extra={"url": image.page_url})
+                    self.missing_urls.append(image.page_url)
+                else:
+                    logger.warning(
+                        "Falha ao baixar imagem",
+                        extra={"url": image.original_url, "error": str(error)},
+                    )
+                    self.failed_urls.append(image.original_url)
                 continue
 
             digest = compute_sha256(content)
@@ -249,7 +269,13 @@ class ServeMaisCollector(BaseCollector):
 
         logger.info(
             "Coleta concluída",
-            extra={"competitor": self.competitor_slug, "saved": len(collected)},
+            extra={
+                "competitor": self.competitor_slug,
+                "saved": len(collected),
+                "skipped": self.skipped_count,
+                "missing": len(self.missing_urls),
+                "failed": len(self.failed_urls),
+            },
         )
         return collected
 

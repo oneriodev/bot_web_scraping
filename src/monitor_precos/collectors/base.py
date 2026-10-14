@@ -70,8 +70,13 @@ class BaseCollector(ABC):
 
     def __init__(self, settings: Settings) -> None:
         self.settings = settings
-        # URLs que falharam na última coleta. O coletor não para por causa delas,
-        # mas a execução é registrada como "parcial" para ninguém ser enganado.
+        # URLs já coletadas antes (vem do banco): o coletor pode pular o download.
+        self.known_urls: set[str] = set()
+        # Resultado da última coleta, além dos arquivos salvos:
+        self.skipped_count = 0  # pulados porque a URL já estava no banco
+        self.missing_urls: list[str] = []  # 404: a página cita, mas o arquivo não existe mais
+        # Falhas de verdade (timeout, erro 5xx...). Não param a coleta, mas a execução
+        # é registrada como "parcial" para ninguém ser enganado.
         self.failed_urls: list[str] = []
 
     @abstractmethod
