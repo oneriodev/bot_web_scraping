@@ -103,3 +103,25 @@ CREATE TABLE IF NOT EXISTS execucoes (
     mensagem            VARCHAR,                        -- erro ou aviso, quando houver
     CHECK (status IN ('em_andamento', 'sucesso', 'parcial', 'falha'))
 );
+
+
+-- ---------------------------------------------------------------------------------
+-- chaves_ofertas: a chave normalizada de cada oferta (calculada em Python na Etapa 6).
+-- Faz a ponte ofertas_extraidas → de_para_concorrente para o painel juntar em SQL.
+-- ---------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS chaves_ofertas (
+    oferta_id    INTEGER PRIMARY KEY,
+    concorrente  VARCHAR NOT NULL,
+    chave        VARCHAR NOT NULL
+);
+
+-- ---------------------------------------------------------------------------------
+-- de_para_rejeitados: produto do concorrente SEM equivalente no nosso cadastro.
+-- Decidido uma vez, sai da fila de aprovação.
+-- ---------------------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS de_para_rejeitados (
+    concorrente            VARCHAR   NOT NULL,
+    descricao_concorrente  VARCHAR   NOT NULL,
+    rejeitado_em           TIMESTAMP NOT NULL,
+    PRIMARY KEY (concorrente, descricao_concorrente)
+);

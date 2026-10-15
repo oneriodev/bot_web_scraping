@@ -341,6 +341,116 @@ class Repository:
             [_utc_now(), status, inserted, duplicates, failures, message, run_id],
         )
 
+        # ------------------------------------------------------------ de-para
+
+    def offers_for_matching(self, competitor: str | None = None) -> list[tuple]:
+        """Ofertas não rejeitadas na revisão, com o caminho absoluto da imagem."""
+        sql = """
+            SELECT o.id, c.concorrente, o.produto, o.marca, o.quantidade, o.unidade,
+                   o.preco_promocional, c.caminho_arquivo
+            FROM ofertas_extraidas o
+            JOIN coletas c ON c.id = o.coleta_id
+            WHERE o.status_revisao <> 'rejeitado'
+        """
+        params: list[object] = []
+        if competitor:
+            sql += " AND c.concorrente = ?"
+            params.append(competitor)
+        sql += " ORDER BY o.id"
+        rows = self.connection.execute(sql, params).fetchall()
+        return [(*row[:7], self._from_stored_path(row[7])) for row in rows]
+
+    def catalog_items(self) -> list[tuple]:
+        """Cadastro interno, na ordem de campos de matching.CatalogItem."""
+        return self.connection.execute(
+            """
+            SELECT id, descricao, marca, categoria, quantidade, unidade, preco_venda, curva_abc
+            FROM produtos_internos
+            ORDER BY descricao
+            """
+        ).fetchall()
+
+    def sync_offer_keys(self, rows: list[tuple[int, str, str]]) -> None:
+        """Grava/atualiza a chave normalizada de cada oferta: (oferta_id, concorrente, chave)."""
+        if not rows:
+            return
+        self.connection.executemany(
+            """
+            INSERT INTO chaves_ofertas (oferta_id, concorrente, chave) VALUES (?, ?, ?)
+            ON CONFLICT (oferta_id) DO UPDATE SET
+                concorrente = EXCLUDED.concorrente, chave = EXCLUDED.chave
+            """,
+            rows,
+        )
+
+    def decided_keys(self) -> set[tuple[str, str]]:
+        """(concorrente, chave) já decididos: aprovados OU marcados como sem equivalente."""
+        rows = self.connection.execute(
+            """
+            SELECT concorrente, descricao_concorrente FROM de_para_concorrente
+            UNION
+            SELECT concorrente, descricao_concorrente FROM de_para_rejeitados
+            """
+        ).fetchall()
+        return {(competitor, key) for competitor, key in rows}
+
+    def approve_match(
+        self, competitor: str, key: str, product_id: int, score: float | None
+    ) -> None:
+        """Salva o vínculo (ou troca o produto, se a chave já tinha vínculo)."""
+        with self.connection.cursor() as cursor:
+            cursor.begin()
+            try:
+                cursor.execute(
+                    """
+                    INSERT INTO de_para_concorrente
+                        (concorrente, descricao_concorrente, produto_id, score, aprovado_em)
+                    VALUES (?, ?, ?, ?, ?)
+                    ON CONFLICT (concorrente, descricao_concorrente) DO UPDATE SET
+                        produto_id = EXCLUDED.produto_id,
+                        score = EXCLUDED.score,
+                        aprovado_em = EXCLUDED.aprovado_em
+                    """,
+                    [competitor, key, product_id, None if score is None else round(score, 2),
+                     _utc_now()],
+                )  # fmt: skip
+                cursor.execute(
+                    "DELETE FROM de_para_rejeitados "
+                    "WHERE concorrente = ? AND descricao_concorrente = ?",
+                    [competitor, key],
+                )
+                cursor.commit()
+            except Exception:
+                cursor.rollback()
+                raise
+
+    def reject_match(self, competitor: str, key: str) -> None:
+        """Marca o produto do concorrente como SEM equivalente no nosso cadastro."""
+        self.connection.execute(
+            "INSERT INTO de_para_rejeitados VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+            [competitor, key, _utc_now()],
+        )
+
+    def undo_decision(self, competitor: str, key: str) -> None:
+        """Desfaz a decisão (aprovação ou rejeição): a chave volta para a fila."""
+        for table in ("de_para_concorrente", "de_para_rejeitados"):
+            self.connection.execute(
+                f"DELETE FROM {table} WHERE concorrente = ? AND descricao_concorrente = ?",
+                [competitor, key],
+            )
+
+    def approved_matches(self) -> list[tuple]:
+        """Vínculos aprovados, com o nome do nosso produto, do mais recente ao mais antigo."""
+        return self.connection.execute(
+            """
+            SELECT d.concorrente, d.descricao_concorrente, p.id, p.descricao, p.marca,
+                   d.score, d.aprovado_em
+            FROM de_para_concorrente d
+            JOIN produtos_internos p ON p.id = d.produto_id
+            ORDER BY d.aprovado_em DESC
+            """
+        ).fetchall()
+
     def known_source_urls(self, competitor: str) -> set[str]:
         """URLs já coletadas CUJO ARQUIVO AINDA EXISTE no disco (para não baixar de novo).
 
