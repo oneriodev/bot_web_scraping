@@ -211,7 +211,7 @@ class Repository:
         placeholders = ", ".join("?" for _ in statuses)
         sql = (
             f"SELECT {_COLLECTION_COLUMNS} FROM coletas "
-            f"WHERE tipo_conteudo = 'image' AND status_extracao IN ({placeholders})"
+            f"WHERE tipo_conteudo IN ('image', 'pdf') AND status_extracao IN ({placeholders})"
         )
         params: list[object] = list(statuses)
         if competitor:

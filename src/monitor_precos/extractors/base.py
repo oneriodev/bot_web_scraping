@@ -39,11 +39,21 @@ class ExtractionOutput:
     output_tokens: int = 0
 
 
+def merge_outputs(outputs: list[ExtractionOutput]) -> ExtractionOutput:
+    """Junta as respostas de várias páginas (PDF) numa só."""
+    return ExtractionOutput(
+        is_offer_image=any(output.is_offer_image for output in outputs),
+        items=[item for output in outputs for item in output.items],
+        input_tokens=sum(output.input_tokens for output in outputs),
+        output_tokens=sum(output.output_tokens for output in outputs),
+    )
+
+
 class BaseExtractor(ABC):
     @property
     @abstractmethod
     def engine(self) -> str:
-        """Identificação gravada no banco, ex.: "llm:gemini-2.5-flash"."""
+        """Identificação gravada no banco, ex.: "llm:gemini-3.8-flash"."""
 
     @abstractmethod
     def extract(self, image: bytes, mime_type: str) -> ExtractionOutput:

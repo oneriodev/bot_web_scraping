@@ -149,7 +149,6 @@ def test_known_source_urls(repo, settings) -> None:
     assert repo.known_source_urls("assai") == set()
 
 
-
 def test_arquivo_sumido_e_restaurado(repo, settings) -> None:
     original = _file(settings, "h1", day="2026-10-11")
     repo.save_collections([original])

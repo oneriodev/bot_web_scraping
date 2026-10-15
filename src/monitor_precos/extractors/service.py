@@ -15,7 +15,8 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from monitor_precos.extractors.base import BaseExtractor, mime_type_for
+from monitor_precos.extractors.base import BaseExtractor, merge_outputs
+from monitor_precos.extractors.pdf import load_pages
 from monitor_precos.extractors.schemas import ExtractedOffer
 from monitor_precos.storage.repository import Repository
 
@@ -101,9 +102,7 @@ class ExtractionService:
         queue = self._repo.collections_to_extract(
             competitor, include_errors=include_errors, limit=limit
         )
-        logger.info(
-            "Fila de extração: %d imagem(ns) com %s", len(queue), self._extractor.engine
-        )
+        logger.info("Fila de extração: %d arquivo(s) com %s", len(queue), self._extractor.engine)
 
         for index, collection in enumerate(queue):
             if index:
@@ -111,13 +110,18 @@ class ExtractionService:
             summary.processed += 1
             name = collection.local_path.name
 
-            mime_type = mime_type_for(collection.local_path)
             try:
-                if mime_type is None:
-                    raise ValueError(f"formato não suportado: {collection.local_path.suffix}")
-                output = self._extractor.extract(collection.local_path.read_bytes(), mime_type)
+                # Imagem = 1 página; PDF = 1 imagem por página. Cada página vai ao extrator
+                # e as ofertas de todas as páginas são juntadas numa resposta só.
+                pages = load_pages(collection.local_path, collection.content_type)
+                outputs = []
+                for page_number, (data, mime_type) in enumerate(pages):
+                    if page_number:
+                        self._sleep(self._delay)
+                    outputs.append(self._extractor.extract(data, mime_type))
+                output = merge_outputs(outputs)
             except Exception as error:
-                # Uma imagem com erro (API fora, arquivo sumido...) não para a fila.
+                # Um arquivo com erro (API fora, arquivo sumido...) não para a fila.
                 # Console: uma linha com o motivo. Arquivo de log: traceback completo (DEBUG).
                 reason = f"{type(error).__name__}: {str(error)[:200]}"
                 logger.error(

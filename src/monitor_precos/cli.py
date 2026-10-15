@@ -6,6 +6,8 @@ Exemplos:
     uv run monitor-precos importar assai      # arquivos de data/inbox/assai/
     uv run monitor-precos extrair --limite 3
     uv run monitor-precos ofertas
+    uv run monitor-precos gabarito --amostra 10
+    uv run monitor-precos avaliar
     uv run monitor-precos resumo
     uv run monitor-precos execucoes
     uv run monitor-precos sql "SELECT concorrente, COUNT(*) FROM coletas GROUP BY 1"
@@ -26,6 +28,15 @@ from monitor_precos.collectors.http_client import PoliteHttpClient
 from monitor_precos.collectors.manual_inbox import ManualInboxCollector
 from monitor_precos.collectors.serve_mais import ServeMaisCollector
 from monitor_precos.config import Settings, get_settings
+from monitor_precos.extractors.evaluation import (
+    Score,
+    evaluate,
+    load_ground_truth,
+    sample_filenames,
+    summarize,
+    write_report,
+    write_template,
+)
 from monitor_precos.extractors.service import ExtractionService
 from monitor_precos.logging_config import setup_logging
 from monitor_precos.storage.repository import Repository
@@ -133,7 +144,6 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
     # "Já conhecidos" = pulados pela URL (nem baixados) + baixados com hash repetido.
     known = collector.skipped_count + len(result.duplicates)
     print(f"{competitor}: {len(result.inserted)} arquivo(s) novo(s), {known} já conhecido(s)")
-    
     if result.repaired:
         print(f"  ↺ {len(result.repaired)} arquivo(s) que tinham sumido do disco foram restaurados")
     for file in result.inserted:
@@ -170,7 +180,7 @@ def _run(collector: BaseCollector, repo: Repository, settings: Settings) -> int:
 
 
 def _run_extraction(settings: Settings, args: argparse.Namespace) -> int:
-    """Extrai ofertas das imagens pendentes usando o LLM configurado."""
+    """Extrai ofertas das imagens/PDFs pendentes usando o LLM configurado."""
     if not settings.gemini_api_key:
         print(
             "GEMINI_API_KEY não definida. Crie a chave em https://aistudio.google.com "
@@ -201,7 +211,7 @@ def _run_extraction(settings: Settings, args: argparse.Namespace) -> int:
         return 0
 
     print(
-        f"Extração ({extractor.engine}): {summary.processed} imagem(ns) — "
+        f"Extração ({extractor.engine}): {summary.processed} arquivo(s) — "
         f"{summary.extracted} ok, {summary.review} para revisão, {summary.errors} com erro"
     )
     print(
@@ -209,6 +219,95 @@ def _run_extraction(settings: Settings, args: argparse.Namespace) -> int:
         f"{summary.input_tokens} de entrada, {summary.output_tokens} de saída"
     )
     return 1 if summary.errors == summary.processed else 0
+
+
+# ------------------------------------------------------------------ avaliação OCR × LLM
+def _ground_truth_path(settings: Settings):
+    return settings.data_dir / "avaliacao" / "gabarito.csv"
+
+
+def _run_ground_truth(settings: Settings, args: argparse.Namespace) -> int:
+    """Cria o gabarito em branco com uma amostra de imagens já extraídas."""
+    path = _ground_truth_path(settings)
+    if path.exists() and not args.sobrescrever:
+        print(
+            f"{path} já existe (pode ter o seu preenchimento!). Use --sobrescrever para recriar.",
+            file=sys.stderr,
+        )
+        return 1
+    if not settings.database_path.exists():
+        print("Banco ainda não existe. Rode coleta e extração primeiro.", file=sys.stderr)
+        return 1
+
+    with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+        names = sample_filenames(connection, args.amostra)
+    if not names:
+        print("Nenhuma imagem extraída ainda. Rode 'extrair' antes.", file=sys.stderr)
+        return 1
+
+    write_template(path, names)
+    print(f"Gabarito criado com {len(names)} imagem(ns): {path}")
+    print("Abra cada imagem em data/raw/... e preencha produto, preco_regular e")
+    print("preco_promocional OLHANDO A IMAGEM (preço com vírgula: 15,99). Depois rode:")
+    print("  uv run monitor-precos avaliar")
+    return 0
+
+
+def _format_score(score: Score) -> str:
+    mark = "✔" if score.promo_ok else "✘"
+    return f"{mark} preço  nome {score.product_similarity:>4.0%}"
+
+
+def _run_evaluation(settings: Settings) -> int:
+    """Mede a taxa de acerto de LLM (já no banco) e OCR (roda agora) contra o gabarito."""
+    path = _ground_truth_path(settings)
+    if not path.exists():
+        print("Crie o gabarito antes: uv run monitor-precos gabarito", file=sys.stderr)
+        return 1
+    truth_rows = load_ground_truth(path)
+    if not truth_rows:
+        print(f"Nenhuma linha preenchida em {path}.", file=sys.stderr)
+        return 1
+
+    # Import tardio: só exige o Tesseract instalado para este comando.
+    import pytesseract
+
+    from monitor_precos.extractors.ocr import TesseractExtractor
+
+    try:
+        with duckdb.connect(str(settings.database_path), read_only=True) as connection:
+            results = evaluate(connection, settings.data_dir, TesseractExtractor(), truth_rows)
+    except pytesseract.TesseractNotFoundError:
+        print(
+            "Tesseract não encontrado. Instale: sudo apt install tesseract-ocr tesseract-ocr-por",
+            file=sys.stderr,
+        )
+        return 1
+
+    print(f"{'arquivo':<48} {'gabarito':>8} | {'LLM':<18} | {'OCR':<18}")
+    for row in results:
+        print(
+            f"{row.truth.filename[:48]:<48} {row.truth.promo_price:>8} | "
+            f"{_format_score(row.llm):<18} | {_format_score(row.ocr):<18}"
+        )
+
+    summary = summarize(results)
+    print()
+    for engine, label in (("llm", "LLM"), ("ocr", "OCR")):
+        metrics = summary[engine]
+        print(
+            f"{label}: preço 'por' certo em {metrics['preco_por']:.0%} | "
+            f"'de' certo em {metrics['preco_de']:.0%} | "
+            f"nome {metrics['similaridade_produto']:.0%} parecido"
+        )
+    if results:
+        average = sum(row.ocr_seconds for row in results) / len(results)
+        print(f"OCR: {average:.2f} s por imagem (local, custo zero)")
+
+    report = settings.data_dir / "avaliacao" / f"resultado_{datetime.now():%Y%m%d_%H%M}.csv"
+    write_report(report, results)
+    print(f"Relatório detalhado: {report}")
+    return 0
 
 
 def _run_sql(settings: Settings, query: str) -> int:
@@ -239,16 +338,24 @@ def _build_parser() -> argparse.ArgumentParser:
     inbox = sub.add_parser("importar", help="importa arquivos de data/inbox/<concorrente>/")
     inbox.add_argument("concorrente", help="ex.: assai, fort_atacadista")
 
-    extract = sub.add_parser("extrair", help="extrai ofertas das imagens pendentes (LLM)")
+    extract = sub.add_parser("extrair", help="extrai ofertas das imagens/PDFs pendentes (LLM)")
     extract.add_argument("--concorrente", default=None, help="só deste concorrente")
     extract.add_argument(
-        "--limite", type=int, default=None, help="máx. de imagens (padrão: EXTRACTION_MAX_PER_RUN)"
+        "--limite", type=int, default=None, help="máx. de arquivos (padrão: EXTRACTION_MAX_PER_RUN)"
     )
     extract.add_argument(
-        "--incluir-erros", action="store_true", help="tenta de novo as que deram erro"
+        "--incluir-erros", action="store_true", help="tenta de novo os que deram erro"
     )
 
     sub.add_parser("ofertas", help="últimas ofertas extraídas")
+
+    ground_truth = sub.add_parser("gabarito", help="cria o gabarito em branco para avaliação")
+    ground_truth.add_argument("--amostra", type=int, default=10, help="quantas imagens sortear")
+    ground_truth.add_argument(
+        "--sobrescrever", action="store_true", help="recria mesmo se já existir"
+    )
+    sub.add_parser("avaliar", help="compara LLM e OCR contra o gabarito")
+
     sub.add_parser("resumo", help="resumo das coletas gravadas no banco")
     sub.add_parser("execucoes", help="últimas execuções de coleta (auditoria)")
 
@@ -277,6 +384,10 @@ def main(argv: list[str] | None = None) -> int:
         return _run_sql(settings, OFFERS_SQL)
     if args.command == "extrair":
         return _run_extraction(settings, args)
+    if args.command == "gabarito":
+        return _run_ground_truth(settings, args)
+    if args.command == "avaliar":
+        return _run_evaluation(settings)
 
     with Repository(settings.database_path, settings.data_dir) as repo:
         if args.command == "importar":
