@@ -23,6 +23,7 @@ import duckdb
 from monitor_precos.collectors.base import CollectedFile
 
 if TYPE_CHECKING:  # só para os type hints; não carrega o Pydantic ao importar o módulo
+    from monitor_precos.catalog import InternalProduct
     from monitor_precos.extractors.schemas import ExtractedOffer
 
 logger = logging.getLogger(__name__)
@@ -350,6 +351,48 @@ class Repository:
         ).fetchall()
         return {url for url, path in rows if self._from_stored_path(path).exists()}
 
+        # ------------------------------------------------------------ produtos internos
+
+    def upsert_products(self, products: list[InternalProduct]) -> int:
+        """Grava o cadastro e recalcula a curva ABC, tudo numa transação.
+
+        1. Os produtos vão para uma tabela TEMPORÁRIA (staging).
+        2. Um único INSERT ... SELECT calcula a curva ABC com função de janela e grava.
+        3. Produto que já existe é ATUALIZADO (upsert): reimportar não duplica nada.
+        """
+        if not products:
+            return 0
+        rows = [
+            (p.id, p.barcode, p.description, p.brand, p.category,
+             p.quantity, p.unit, p.sale_price, p.monthly_sales)
+            for p in products
+        ]  # fmt: skip
+
+        with self.connection.cursor() as cursor:
+            cursor.begin()
+            try:
+                cursor.execute(
+                    """
+                    CREATE OR REPLACE TEMP TABLE staging_produtos (
+                        id INTEGER, codigo_barras VARCHAR, descricao VARCHAR, marca VARCHAR,
+                        categoria VARCHAR, quantidade DECIMAL(10, 3), unidade VARCHAR,
+                        preco_venda DECIMAL(10, 2), vendas_mes INTEGER
+                    )
+                    """
+                )
+                cursor.executemany(
+                    "INSERT INTO staging_produtos VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
+                )
+                cursor.execute(_UPSERT_PRODUCTS_SQL, [_utc_now()])
+                cursor.execute("DROP TABLE staging_produtos")
+                cursor.commit()
+            except Exception:
+                cursor.rollback()
+                raise
+
+        logger.info("Cadastro de produtos atualizado", extra={"products": len(rows)})
+        return len(rows)
+
     def latest_valid_until(self, competitor: str) -> date | None:
         """A validade mais distante já anunciada pelo concorrente (None se nunca houve)."""
         row = self.connection.execute(
@@ -361,3 +404,44 @@ class Repository:
 def _utc_now() -> datetime:
     """Agora em UTC, sem fuso anexado (é assim que as colunas TIMESTAMP guardam)."""
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+# Curva ABC (Pareto) com FUNÇÃO DE JANELA:
+#   faturamento = preço × vendas do mês
+#   fatia_antes = quanto do faturamento total já foi somado pelos produtos que vendem MAIS
+#                 que este (soma acumulada, sem incluir ele mesmo)
+#   A: começa antes de 80% | B: antes de 95% | C: o resto
+_UPSERT_PRODUCTS_SQL = """
+INSERT INTO produtos_internos (
+    id, codigo_barras, descricao, marca, categoria, quantidade, unidade,
+    curva_abc, preco_venda, atualizado_em
+)
+SELECT
+    id, codigo_barras, descricao, marca, categoria, quantidade, unidade,
+    CASE
+        WHEN COALESCE(fatia_antes, 0) < 0.80 THEN 'A'
+        WHEN fatia_antes < 0.95 THEN 'B'
+        ELSE 'C'
+    END AS curva_abc,
+    preco_venda,
+    ? AS atualizado_em
+FROM (
+    SELECT
+        *,
+        SUM(preco_venda * vendas_mes) OVER (
+            ORDER BY preco_venda * vendas_mes DESC, id
+            ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING
+        ) / NULLIF(SUM(preco_venda * vendas_mes) OVER (), 0) AS fatia_antes
+    FROM staging_produtos
+) AS ranking
+ON CONFLICT (id) DO UPDATE SET
+    codigo_barras = EXCLUDED.codigo_barras,
+    descricao     = EXCLUDED.descricao,
+    marca         = EXCLUDED.marca,
+    categoria     = EXCLUDED.categoria,
+    quantidade    = EXCLUDED.quantidade,
+    unidade       = EXCLUDED.unidade,
+    curva_abc     = EXCLUDED.curva_abc,
+    preco_venda   = EXCLUDED.preco_venda,
+    atualizado_em = EXCLUDED.atualizado_em
+"""

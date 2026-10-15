@@ -8,6 +8,8 @@ Exemplos:
     uv run monitor-precos ofertas
     uv run monitor-precos gabarito --amostra 10
     uv run monitor-precos avaliar
+    uv run monitor-precos importar-produtos   # dados_exemplo/produtos_ficticios.csv
+    uv run monitor-precos produtos
     uv run monitor-precos resumo
     uv run monitor-precos execucoes
     uv run monitor-precos sql "SELECT concorrente, COUNT(*) FROM coletas GROUP BY 1"
@@ -20,9 +22,11 @@ import logging
 import sys
 from collections.abc import Callable
 from datetime import date, datetime
+from pathlib import Path
 
 import duckdb
 
+from monitor_precos.catalog import EXAMPLE_PRODUCTS_CSV, load_products_csv
 from monitor_precos.collectors.base import BaseCollector
 from monitor_precos.collectors.http_client import PoliteHttpClient
 from monitor_precos.collectors.manual_inbox import ManualInboxCollector
@@ -96,6 +100,26 @@ FROM ofertas_extraidas o
 JOIN coletas c ON c.id = o.coleta_id
 ORDER BY o.id DESC
 LIMIT 50
+"""
+
+PRODUCTS_SQL = """
+SELECT
+    curva_abc                                AS curva,
+    id,
+    descricao,
+    marca,
+    categoria,
+    concat_ws(' ', quantidade, unidade)      AS embalagem,
+    preco_venda
+FROM produtos_internos
+ORDER BY curva_abc, categoria, descricao
+"""
+
+ABC_SUMMARY_SQL = """
+SELECT curva_abc AS curva, COUNT(*) AS produtos
+FROM produtos_internos
+GROUP BY 1
+ORDER BY 1
 """
 
 
@@ -222,7 +246,7 @@ def _run_extraction(settings: Settings, args: argparse.Namespace) -> int:
 
 
 # ------------------------------------------------------------------ avaliação OCR × LLM
-def _ground_truth_path(settings: Settings):
+def _ground_truth_path(settings: Settings) -> Path:
     return settings.data_dir / "avaliacao" / "gabarito.csv"
 
 
@@ -310,6 +334,31 @@ def _run_evaluation(settings: Settings) -> int:
     return 0
 
 
+# ------------------------------------------------------------------ produtos internos
+def _run_import_products(settings: Settings, args: argparse.Namespace) -> int:
+    """Importa o cadastro de produtos (tudo-ou-nada) e recalcula a curva ABC."""
+    path = Path(args.arquivo).expanduser() if args.arquivo else EXAMPLE_PRODUCTS_CSV
+    if not path.exists():
+        print(f"Arquivo não encontrado: {path}", file=sys.stderr)
+        return 1
+
+    products, errors = load_products_csv(path)
+    if errors:
+        # Tudo-ou-nada: cadastro meio importado é pior que cadastro nenhum.
+        print(f"{len(errors)} erro(s) em {path.name} — nada foi importado:", file=sys.stderr)
+        for error in errors[:20]:
+            print(f"  {error}", file=sys.stderr)
+        return 1
+    if not products:
+        print(f"Nenhum produto em {path.name}.", file=sys.stderr)
+        return 1
+
+    with Repository(settings.database_path, settings.data_dir) as repo:
+        total = repo.upsert_products(products)
+    print(f"{total} produto(s) importado(s) de {path.name}. Curva ABC recalculada.")
+    return _run_sql(settings, ABC_SUMMARY_SQL)
+
+
 def _run_sql(settings: Settings, query: str) -> int:
     """Executa uma consulta SOMENTE LEITURA e imprime o resultado como tabela."""
     if not settings.database_path.exists():
@@ -356,6 +405,12 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     sub.add_parser("avaliar", help="compara LLM e OCR contra o gabarito")
 
+    products = sub.add_parser("importar-produtos", help="importa o cadastro de produtos (CSV)")
+    products.add_argument(
+        "--arquivo", default=None, help="CSV do cadastro (padrão: dados fictícios de exemplo)"
+    )
+    sub.add_parser("produtos", help="lista o cadastro de produtos com a curva ABC")
+
     sub.add_parser("resumo", help="resumo das coletas gravadas no banco")
     sub.add_parser("execucoes", help="últimas execuções de coleta (auditoria)")
 
@@ -382,12 +437,16 @@ def main(argv: list[str] | None = None) -> int:
         return _run_sql(settings, RUNS_SQL)
     if args.command == "ofertas":
         return _run_sql(settings, OFFERS_SQL)
+    if args.command == "produtos":
+        return _run_sql(settings, PRODUCTS_SQL)
     if args.command == "extrair":
         return _run_extraction(settings, args)
     if args.command == "gabarito":
         return _run_ground_truth(settings, args)
     if args.command == "avaliar":
         return _run_evaluation(settings)
+    if args.command == "importar-produtos":
+        return _run_import_products(settings, args)
 
     with Repository(settings.database_path, settings.data_dir) as repo:
         if args.command == "importar":

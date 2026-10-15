@@ -30,6 +30,13 @@ _UNIT_ALIASES: dict[str, Unit] = {
 _BR_DATE = re.compile(r"(\d{2})/(\d{2})/(\d{4})")
 
 
+def normalize_unit(value: Any) -> str | None:
+    """Padroniza a unidade: "KG", "Kg.", "quilo" → "kg". Desconhecida → None."""
+    if value is None or value == "":
+        return None
+    return _UNIT_ALIASES.get(str(value).strip().lower().rstrip("."))
+
+
 def parse_brl(value: Any) -> Decimal | None:
     """Converte preço em reais para Decimal: "R$ 1.299,90" → Decimal("1299.90").
 

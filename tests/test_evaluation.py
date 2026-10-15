@@ -48,7 +48,6 @@ def test_template_e_leitura_do_gabarito(tmp_path) -> None:
     assert linha.regular_price == Decimal("32.90")
 
 
-
 def test_gabarito_salvo_com_virgula_pelo_libreoffice(tmp_path) -> None:
     caminho = tmp_path / "gabarito.csv"
     caminho.write_text(

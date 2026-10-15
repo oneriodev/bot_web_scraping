@@ -1,0 +1,51 @@
+id;codigo_barras;descricao;marca;categoria;quantidade;unidade;preco_venda;vendas_mes
+1001;;Arroz Branco Tipo 1;Tio João;Mercearia;5;kg;28,90;1850
+1002;;Arroz Branco Tipo 1;Camil;Mercearia;5;kg;26,49;1420
+1003;;Feijão Carioca Tipo 1;Camil;Mercearia;1;kg;8,49;2100
+1004;;Feijão Preto Tipo 1;Kicaldo;Mercearia;1;kg;8,99;640
+1005;;Óleo de Soja;Soya;Mercearia;900;ml;7,99;3200
+1006;;Óleo de Soja;Liza;Mercearia;900;ml;8,29;1150
+1007;;Açúcar Cristal;União;Mercearia;5;kg;22,90;1300
+1008;;Café Torrado e Moído Tradicional;Pilão;Mercearia;500;g;24,90;980
+1009;;Café Torrado e Moído Extra Forte;3 Corações;Mercearia;500;g;23,49;760
+1010;;Farinha de Trigo Tipo 1;Dona Benta;Mercearia;1;kg;5,79;690
+1011;;Macarrão Espaguete;Renata;Mercearia;500;g;4,69;1250
+1012;;Macarrão Instantâneo Galinha;Nissin;Mercearia;85;g;2,19;2400
+1013;;Sal Refinado;Cisne;Mercearia;1;kg;2,99;520
+1014;;Molho de Tomate Tradicional;Pomarola;Mercearia;340;g;2,89;1100
+1015;;Maionese Tradicional;Hellmann's;Mercearia;500;g;10,99;430
+1016;;Mistura para Bolo Chocolate;Fleischmann;Mercearia;400;g;6,49;310
+1017;;Fermento Químico em Pó;Royal;Mercearia;100;g;4,59;280
+1018;;Tempero em Pó Completo;Sazón;Mercearia;60;g;4,29;450
+1019;;Vinagre de Maçã;Castelo;Mercearia;750;ml;7,49;210
+1020;;Leite Condensado;Moça;Mercearia;395;g;7,99;640
+1021;;Creme de Leite;Nestlé;Mercearia;200;g;3,79;720
+1022;;Achocolatado em Pó;Nescau;Mercearia;400;g;9,49;530
+1023;;Biscoito Recheado Chocolate;Trakinas;Mercearia;126;g;3,29;880
+1024;;Leite UHT Integral;Piracanjuba;Laticínios;1;l;5,29;4100
+1025;;Margarina com Sal;Qualy;Laticínios;500;g;8,99;760
+1026;;Queijo Muçarela Fatiado;Rede Exemplo;Frios;1;kg;44,90;390
+1027;;Presunto Cozido Fatiado;Rede Exemplo;Frios;1;kg;32,90;350
+1028;;Iogurte Natural Integral;Nestlé;Laticínios;170;g;2,99;600
+1029;;Manteiga com Sal;Aviação;Laticínios;200;g;14,90;180
+1030;;Ovos Brancos Grandes;Rede Exemplo;Mercearia;30;un;19,90;820
+1031;;Carne Bovina Patinho;Rede Exemplo;Carnes;1;kg;42,90;540
+1032;;Carne Moída de Primeira;Rede Exemplo;Carnes;1;kg;34,90;910
+1033;;Coxa e Sobrecoxa de Frango;Seara;Carnes;1;kg;13,99;1320
+1034;;Linguiça Toscana;Sadia;Carnes;1;kg;21,90;610
+1035;;Cerveja Pilsen Lata;Skol;Bebidas;269;ml;2,99;5200
+1036;;Cerveja Pilsen Lata;Brahma;Bebidas;350;ml;3,79;3100
+1037;;Refrigerante Cola;Coca-Cola;Bebidas;2;l;10,99;2300
+1038;;Refrigerante Guaraná;Antarctica;Bebidas;2;l;7,99;1650
+1039;;Água Mineral sem Gás;Crystal;Bebidas;1,5;l;2,49;1900
+1040;;Suco de Uva Integral;Aurora;Bebidas;1,5;l;16,90;240
+1041;;Papel Higiênico Folha Dupla;Neve;Higiene;12;un;21,90;880
+1042;;Papel Toalha Folha Dupla;Snob;Limpeza;2;un;8,99;450
+1043;;Absorvente Noturno com Abas;Always;Higiene;8;un;9,49;260
+1044;;Creme Dental;Colgate;Higiene;90;g;4,49;1100
+1045;;Sabonete em Barra;Lux;Higiene;85;g;2,29;1600
+1046;;Shampoo;Seda;Higiene;325;ml;12,90;300
+1047;;Sabão em Pó;Omo;Limpeza;1,6;kg;28,90;690
+1048;;Detergente Líquido Neutro;Ypê;Limpeza;500;ml;2,49;2200
+1049;;Amaciante de Roupas;Comfort;Limpeza;2;l;18,90;380
+1050;;Água Sanitária;Qboa;Limpeza;2;l;7,49;520
