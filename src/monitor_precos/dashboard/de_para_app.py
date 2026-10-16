@@ -1,7 +1,7 @@
-"""Tela de aprovação do de-para (Streamlit).
+"""Página de aprovação do de-para (faz parte da aplicação em app.py).
 
-Rodar:
-    uv run streamlit run src/monitor_precos/dashboard/de_para_app.py
+Rodar a aplicação completa:
+    uv run streamlit run src/monitor_precos/dashboard/app.py
 
 O Streamlit roda o script INTEIRO de novo a cada clique. Por isso o banco é aberto
 e fechado em cada leitura/gravação (with Repository...): a conexão fica aberta só
@@ -15,11 +15,11 @@ from decimal import Decimal
 import streamlit as st
 
 from monitor_precos.config import get_settings
-from monitor_precos.matching.matcher import CatalogItem, OfferToMatch, group_offers, suggest
+from monitor_precos.matching.matcher import CatalogItem, OfferToMatch, suggest
 from monitor_precos.matching.normalize import format_size
+from monitor_precos.matching.service import refresh_offer_keys
 from monitor_precos.storage.repository import Repository
 
-st.set_page_config(page_title="De-para · Monitor de Preços", page_icon="🔗", layout="wide")
 settings = get_settings()
 
 
@@ -37,9 +37,7 @@ def describe(item: CatalogItem) -> str:
 
 def load_state() -> tuple[list[OfferToMatch], list[CatalogItem], list[tuple]]:
     with Repository(settings.database_path, settings.data_dir) as repo:
-        groups = group_offers(repo.offers_for_matching())
-        # Guarda a chave de cada oferta: é a ponte que o painel (Etapa 7) usa no SQL.
-        repo.sync_offer_keys([(oid, g.competitor, g.key) for g in groups for oid in g.offer_ids])
+        groups = refresh_offer_keys(repo)
         decided = repo.decided_keys()
         catalog = [CatalogItem(*row) for row in repo.catalog_items()]
         approved = repo.approved_matches()
@@ -47,9 +45,20 @@ def load_state() -> tuple[list[OfferToMatch], list[CatalogItem], list[tuple]]:
     return pending, catalog, approved
 
 
+def after_decision(message: str) -> None:
+    """Toda decisão muda o que o painel mostra: limpa o cache dele e redesenha a tela."""
+    st.cache_data.clear()
+    st.toast(message)
+    st.rerun()
+
+
 pending, catalog, approved = load_state()
 
 st.title("🔗 De-para: produto do concorrente → nosso produto")
+st.caption(
+    "O painel só compara produtos com vínculo APROVADO. Decida cada item da fila: "
+    "aprovar o equivalente ou marcar 'Sem equivalente'."
+)
 if not catalog:
     st.warning("Cadastro interno vazio. Rode: `uv run monitor-precos importar-produtos`")
     st.stop()
@@ -122,13 +131,11 @@ with tab_review:
                 score = chosen.score if target.id == chosen.product.id else None
                 with Repository(settings.database_path, settings.data_dir) as repo:
                     repo.approve_match(item.competitor, item.key, target.id, score)
-                st.toast(f"Vinculado a: {target.description}")
-                st.rerun()
+                after_decision(f"Vinculado a: {target.description}")
             if col_none.button("🚫 Sem equivalente"):
                 with Repository(settings.database_path, settings.data_dir) as repo:
                     repo.reject_match(item.competitor, item.key)
-                st.toast("Marcado como sem equivalente no nosso cadastro.")
-                st.rerun()
+                after_decision("Marcado como sem equivalente no nosso cadastro.")
             if col_skip.button("⏭ Pular"):
                 skipped.add((item.competitor, item.key))
                 st.rerun()
@@ -159,4 +166,4 @@ with tab_approved:
         if to_undo and st.button("↩ Desfazer"):
             with Repository(settings.database_path, settings.data_dir) as repo:
                 repo.undo_decision(*to_undo)
-            st.rerun()
+            after_decision("Vínculo desfeito: o item voltou para a fila.")
