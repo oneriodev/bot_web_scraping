@@ -125,3 +125,13 @@ CREATE TABLE IF NOT EXISTS de_para_rejeitados (
     rejeitado_em           TIMESTAMP NOT NULL,
     PRIMARY KEY (concorrente, descricao_concorrente)
 );
+
+
+-- ---------------------------------------------------------------------------------
+-- Migração (Etapa 8): posição de cada oferta dentro do encarte, para recortar o card.
+-- IF NOT EXISTS: idempotente, pode rodar toda vez que o banco abre.
+--   pagina : página do PDF (0 = primeira; imagem = 0)
+--   recorte: [ymin, xmin, ymax, xmax] normalizado de 0 a 1000 (formato do Gemini)
+-- ---------------------------------------------------------------------------------
+ALTER TABLE ofertas_extraidas ADD COLUMN IF NOT EXISTS pagina INTEGER;
+ALTER TABLE ofertas_extraidas ADD COLUMN IF NOT EXISTS recorte INTEGER[];

@@ -75,6 +75,8 @@ class ExtractedOffer(BaseModel):
     valid_from: date | None = None
     valid_until: date | None = None
     confidence: float = Field(ge=0, le=1)
+    page: int = Field(default=0, ge=0)  # página do PDF (imagem = 0)
+    box_2d: tuple[int, int, int, int] | None = None  # [ymin, xmin, ymax, xmax] de 0 a 1000
 
     # ---------------------------------------------------- validadores de campo
     # mode="before": roda ANTES da conversão de tipo, para limpar o valor bruto do LLM.
@@ -119,6 +121,20 @@ class ExtractedOffer(BaseModel):
                 return None
         return value
 
+    @field_validator("box_2d", mode="before")
+    @classmethod
+    def _parse_box(cls, value: Any) -> tuple[int, int, int, int] | None:
+        """Caixa do Gemini. Inválida vira None: a oferta continua, só não terá recorte."""
+        if not isinstance(value, list | tuple) or len(value) != 4:
+            return None
+        try:
+            ymin, xmin, ymax, xmax = (min(max(int(v), 0), 1000) for v in value)
+        except (TypeError, ValueError):
+            return None
+        if ymin >= ymax or xmin >= xmax:
+            return None
+        return ymin, xmin, ymax, xmax
+
     # ---------------------------------------------------- regra entre campos
     @model_validator(mode="after")
     def _check_consistency(self) -> ExtractedOffer:
@@ -145,6 +161,7 @@ class LlmOffer(BaseModel):
     valid_from: str | None
     valid_until: str | None
     confidence: float
+    box_2d: list[int] | None
 
 
 class LlmCard(BaseModel):

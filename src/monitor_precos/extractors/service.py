@@ -118,8 +118,11 @@ class ExtractionService:
                 for page_number, (data, mime_type) in enumerate(pages):
                     if page_number:
                         self._sleep(self._delay)
-                    outputs.append(self._extractor.extract(data, mime_type))
-                output = merge_outputs(outputs)
+                    page_output = self._extractor.extract(data, mime_type)
+                    for item in page_output.items:
+                        item["page"] = page_number  # para recortar na página certa do PDF
+                    outputs.append(page_output)
+
             except Exception as error:
                 # Um arquivo com erro (API fora, arquivo sumido...) não para a fila.
                 # Console: uma linha com o motivo. Arquivo de log: traceback completo (DEBUG).

@@ -44,12 +44,13 @@ def test_size_similarity(a, b, esperado) -> None:
 def test_group_offers_junta_a_mesma_chave() -> None:
     linhas = [
         (1, "serve_mais", "Fermento Químico em Pó", "Felitá Chef", Decimal("100"), "g",
-         Decimal("3.79"), Path("a.webp")),
+         Decimal("3.79"), Path("a.webp"), 0, [100, 0, 250, 166]),
         (2, "serve_mais", "FERMENTO QUIMICO EM PO", "Felita Chef", Decimal("100"), "g",
-         Decimal("3.79"), Path("b.webp")),
+         Decimal("3.79"), Path("b.webp"), None, None),
     ]  # fmt: skip
     [grupo] = group_offers(linhas)
     assert grupo.offer_ids == (1, 2)
+    assert grupo.box == (100, 0, 250, 166)  # recorte da primeira oferta do grupo
 
 
 # ------------------------------------------------------------------ banco

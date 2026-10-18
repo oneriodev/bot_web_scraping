@@ -280,8 +280,8 @@ class Repository:
                         INSERT INTO ofertas_extraidas (
                             coleta_id, produto, marca, quantidade, unidade, preco_regular,
                             preco_promocional, condicao_especial, validade_inicio, validade_fim,
-                            confianca, motor, extraido_em, status_revisao
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            confianca, motor, extraido_em, status_revisao, pagina, recorte
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """,
                         [
                             collection_id,
@@ -298,6 +298,8 @@ class Repository:
                             engine,
                             now,
                             review_status,
+                            offer.page,
+                            list(offer.box_2d) if offer.box_2d else None,
                         ],
                     )
                 cursor.commit()
@@ -344,10 +346,10 @@ class Repository:
         # ------------------------------------------------------------ de-para
 
     def offers_for_matching(self, competitor: str | None = None) -> list[tuple]:
-        """Ofertas não rejeitadas na revisão, com o caminho absoluto da imagem."""
+        """Ofertas não rejeitadas, com caminho absoluto da imagem, página e recorte."""
         sql = """
             SELECT o.id, c.concorrente, o.produto, o.marca, o.quantidade, o.unidade,
-                   o.preco_promocional, c.caminho_arquivo
+                   o.preco_promocional, c.caminho_arquivo, o.pagina, o.recorte
             FROM ofertas_extraidas o
             JOIN coletas c ON c.id = o.coleta_id
             WHERE o.status_revisao <> 'rejeitado'
@@ -358,7 +360,7 @@ class Repository:
             params.append(competitor)
         sql += " ORDER BY o.id"
         rows = self.connection.execute(sql, params).fetchall()
-        return [(*row[:7], self._from_stored_path(row[7])) for row in rows]
+        return [(*row[:7], self._from_stored_path(row[7]), *row[8:]) for row in rows]
 
     def catalog_items(self) -> list[tuple]:
         """Cadastro interno, na ordem de campos de matching.CatalogItem."""

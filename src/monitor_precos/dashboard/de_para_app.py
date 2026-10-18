@@ -15,6 +15,7 @@ from decimal import Decimal
 import streamlit as st
 
 from monitor_precos.config import get_settings
+from monitor_precos.extractors.crop import offer_image
 from monitor_precos.matching.matcher import CatalogItem, OfferToMatch, suggest
 from monitor_precos.matching.normalize import format_size
 from monitor_precos.matching.service import refresh_offer_keys
@@ -91,7 +92,11 @@ with tab_review:
 
         with col_image:
             if item.image_path.exists():
-                st.image(str(item.image_path), width=320)
+                # Card recortado pela caixa que o Gemini devolveu (ou a página inteira).
+                st.image(offer_image(item.image_path, item.page, item.box), width=320)
+                if item.box:
+                    with st.expander("Ver encarte inteiro"):
+                        st.image(offer_image(item.image_path, item.page))
             else:
                 st.info("Imagem não encontrada no disco.")
 

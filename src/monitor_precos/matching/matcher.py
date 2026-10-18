@@ -57,6 +57,8 @@ class OfferToMatch:
     promo_price: Decimal
     image_path: Path
     offer_ids: tuple[int, ...]
+    page: int = 0  # página do PDF onde está a oferta (imagem = 0)
+    box: tuple[int, int, int, int] | None = None  # recorte do card, 0-1000
 
 
 def name_similarity(a: str, b: str) -> float:
@@ -114,16 +116,19 @@ def group_offers(rows: Iterable[tuple]) -> list[OfferToMatch]:
     """Agrupa ofertas com a mesma chave: o mesmo produto em 3 encartes = 1 decisão só.
 
     `rows` vem de repo.offers_for_matching():
-        (oferta_id, concorrente, produto, marca, quantidade, unidade, preço, caminho_imagem)
+        (oferta_id, concorrente, produto, marca, quantidade, unidade, preço,
+         caminho_imagem, página, recorte)
+    A imagem/recorte exibidos são os da PRIMEIRA oferta do grupo.
     """
     groups: dict[tuple[str, str], OfferToMatch] = {}
-    for offer_id, competitor, product, brand, quantity, unit, price, image in rows:
+    for offer_id, competitor, product, brand, quantity, unit, price, image, page, box in rows:
         key = offer_key(product, brand, quantity, unit)
         existing = groups.get((competitor, key))
         if existing is None:
             groups[(competitor, key)] = OfferToMatch(
-                competitor, key, product, brand, quantity, unit, price, image, (offer_id,)
-            )
+                competitor, key, product, brand, quantity, unit, price, image, (offer_id,),
+                page or 0, tuple(box) if box else None,
+            )  # fmt: skip
         else:
             groups[(competitor, key)] = replace(existing, offer_ids=(*existing.offer_ids, offer_id))
     return list(groups.values())
